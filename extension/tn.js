@@ -202,8 +202,15 @@
     const need = ARENA_DAILY - done;
     if (need <= 0) return log(`Đấu Tiên Đài: hôm nay đã đánh đủ ${ARENA_DAILY} trận`);
     log(`Đấu Tiên Đài: hôm nay đã đánh ${done}/${ARENA_DAILY}, đánh thêm ${need} trận`);
+    await arenaFight(need);
+  }
+
+  // Đánh `times` trận Đấu Tiên Đài liên tiếp (dùng cho nhiệm vụ ngày và hành động đặc biệt). Dừng bằng TN.stop().
+  async function arenaFight(times) {
     const ctrl = ArenaCtrl.gInst();
+    const need = times;
     for (let n = 1; n <= need; n++) {
+      if (stopFlag) return log(`Đấu Tiên Đài: đã dừng sau ${n - 1} trận`);
       ctrl.send14201();
       const info = await waitRecv(14201);
       const enemies = (info && info.enemy_list) || [];
@@ -508,6 +515,106 @@
       cost = r.left_free_count > 0 ? 0 : r.left_buy_count > 0 ? r.next_cost : null;
       await sleep(1000);
     }
+  }
+
+  // Di tích tiên giới (RainRuinsCtrl): mỗi đội rảnh thu thập 1 ô. Chọn ô cấp cao nhất (cùng cấp lấy ô trên cùng);
+  // nếu mọi ô trống đều cấp 1 và còn lượt đổi miễn phí (base cfg free_refresh) thì đổi ô (32702) rồi xét lại,
+  // hết lượt miễn phí thì vẫn thu thập ô cấp 1. Lệnh: 32700 {flag:1} thông tin, 32703 {index, team_id} thu thập.
+  async function ruinsGather() {
+    const ctrl = RainRuinsCtrl.gInst();
+    const model = ctrl.getCurlModel();
+    const net = NetMgr.gInst();
+    const base = model.getBaseCfg() || {};
+    const freeRefresh = base.free_refresh || 0;
+    // getSelfFieldCfg() trả cả bảng ô (ruins_data_json[3]) theo field_id; cấp ô (Lv trên UI) là quality.
+    const fieldTable = model.getSelfFieldCfg() || {};
+    const fieldCfg = id => fieldTable[id];
+    const lvOf = id => {
+      const e = fieldCfg(id);
+      return e && e.quality != null ? Number(e.quality) : null;
+    };
+
+    net.sendMsg(32700, { flag: 1 });
+    const info = await waitRecv(32700);
+    if (!info) return log('Di tích: không lấy được thông tin');
+    let fields = info.field_list || [];
+    let refreshed = info.daily_refresh_times || 0;
+    let essence = info.essence || 0;
+    const cost = base.gather_cost || 1;
+    let teams = [];
+    try { teams = ctrl.getIdleTeamIdArr() || []; } catch {}
+    log(`Di tích: tinh lực ${essence}, đã đổi ${refreshed}/${freeRefresh} lượt miễn phí, đội rảnh: ${teams.join(', ') || 'không có'}`);
+    if (!teams.length) return log('Di tích: không có đội rảnh');
+
+    const free = () => fields.filter(f => f.field_id > 0 && f.team_id == 0 && f.state == 0).sort((a, b) => a.index - b.index);
+    // index ô: 1-2 hàng trên (1 phải, 2 trái), 3-4 hàng giữa, 5-6 hàng dưới, nên index nhỏ = ở trên.
+    const desc = f => `ô ${f.index} ${(fieldCfg(f.field_id) || {}).orefield_desc || f.field_id} (lv ${lvOf(f.field_id) ?? '?'})`;
+    for (const team of teams) {
+      if (essence < cost) return log(`Di tích: hết tinh lực (${essence})`);
+      let pick;
+      for (;;) {
+        const cands = free();
+        if (!cands.length) return log('Di tích: không còn ô trống để thu thập');
+        if (cands.some(f => lvOf(f.field_id) == null)) {
+          return log(`Di tích: không đọc được cấp của ô, config: ${JSON.stringify(fieldCfg(cands[0].field_id))}`);
+        }
+        log(`Di tích: các ô trống: ${cands.map(desc).join(', ')}`);
+        // sort ổn định: cùng cấp giữ thứ tự ô trên cùng trước.
+        const best = [...cands].sort((a, b) => lvOf(b.field_id) - lvOf(a.field_id))[0];
+        if (lvOf(best.field_id) > 1 || refreshed >= freeRefresh) { pick = best; break; }
+        net.sendMsg(32702, {});
+        const r = await waitRecv(32702);
+        if (!r || r.res != 1) return log(`Di tích: đổi ô lỗi ${errText(r)}`);
+        refreshed = r.daily_refresh_times ?? refreshed + 1;
+        // 32702 chỉ trả các ô được đổi: gộp theo index.
+        const byIdx = Object.fromEntries((r.field_list || []).map(f => [f.index, f]));
+        fields = fields.map(f => byIdx[f.index] || f);
+        log(`Di tích: toàn ô lv 1, đổi miễn phí (${refreshed}/${freeRefresh})`);
+        await sleep(500);
+      }
+      net.sendMsg(32703, { index: pick.index, team_id: team });
+      const r = await waitRecv(32703);
+      if (!r || r.res != 1) return log(`Di tích: đội ${team} thu thập ${desc(pick)} lỗi ${errText(r)}`);
+      essence = r.essence ?? essence - cost;
+      const byIdx = Object.fromEntries((r.field_list || []).map(f => [f.index, f]));
+      fields = fields.map(f => byIdx[f.index] || f);
+      log(`Di tích: đội ${team} thu thập ${desc(pick)} - OK (còn ${essence} tinh lực)`);
+      await sleep(500);
+    }
+  }
+
+  // Việc hằng ngày ngoài nhiệm vụ: mô bái top 1 ba bảng xếp hạng, nhận quà miễn phí, điểm danh VIP, điểm danh.
+  // Gửi lệnh thô như các nút trong game; mục nào đã làm hôm nay thì bỏ qua (xem cờ is_reward / is_sign).
+  async function dailyExtra() {
+    const net = NetMgr.gInst();
+    const ask = async (cmd, data = {}) => {
+      net.sendMsg(cmd, data);
+      return waitRecv(cmd);
+    };
+    const res = r => (r && r.res == 1 ? 'OK' : `lỗi ${errText(r)}`);
+
+    // Mô bái (nút onmoBaiBtn ở bảng xếp hạng): type 2, 1, 3 như thứ tự game gửi.
+    for (const type of [2, 1, 3]) {
+      log(`Mô bái BXH loại ${type}: ${res(await ask(15006, { type, rank: 1 }))}`);
+      await sleep(500);
+    }
+
+    const gift = await ask(30108);
+    if (!gift) log('Quà miễn phí: không lấy được thông tin');
+    else if (gift.is_reward) log('Quà miễn phí: hôm nay đã nhận');
+    else log(`Quà miễn phí: ${res(await ask(30115))}`);
+    await sleep(500);
+
+    const vip = await ask(12407);
+    if (!vip) log('Điểm danh VIP: không lấy được thông tin');
+    else if (vip.is_sign) log('Điểm danh VIP: hôm nay đã điểm danh');
+    else log(`Điểm danh VIP: ${res(await ask(12408))}`);
+    await sleep(500);
+
+    const sign = await ask(30101);
+    if (!sign) log('Điểm danh: không lấy được thông tin');
+    else if (sign.is_sign) log('Điểm danh: hôm nay đã điểm danh');
+    else log(`Điểm danh: ${res(await ask(30102))}`);
   }
 
   // NV 16: Kiếm Hành (DiceCtrl) — đổ xúc xắc tới khi chặng đạt 100%. Như clickDice của game: dùng lượt
@@ -1557,6 +1664,7 @@
   // cả lượt. Việc nhanh trước, Đoạt Bách Tông (chờ hồi chiêu ~2 phút/lần) sau cùng, rồi nhận thưởng + rương.
   async function runAll() {
     const steps = [
+      ['Việc hằng ngày khác', dailyExtra],
       ['Tặng tình bạn', giftFriends],
       ['Cung phụng', guildFete],
       ['Viện trợ', guildHelp],
@@ -1595,7 +1703,12 @@
     readDailyTasks,
     claimAll: action(claimAll),
     giftFriends: action(giftFriends),
+    dailyExtra: action(dailyExtra),
     arena: action(arena),
+    arenaFight: action(times => {
+      stopFlag = false;
+      return arenaFight(times);
+    }),
     guildFete: action(guildFete),
     guildHelp: action(guildHelp),
     recruit: action(recruit),
@@ -1617,6 +1730,7 @@
     mwLab: action(mwLab),
     mwApplyBest: action(mwApplyBest),
     spiritHarvest: action(spiritHarvest),
+    ruinsGather: action(ruinsGather),
     kfLol: action(kfLol),
     extremeYin: action(extremeYin),
     stop: () => {

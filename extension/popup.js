@@ -77,7 +77,8 @@ const bind = (id, fn) => (document.getElementById(id).onclick = fn);
 bind('btnAll', () => callTN('runAll'));
 bind('btnTasks', () => callTN('readDailyTasks'));
 bind('btnClaim', () => callTN('claimAll'));
-bind('btnGift', () => callTN('giftFriends'));
+bind('btnExtra', () => callTN('dailyExtra'));
+bind('btnGift',() => callTN('giftFriends'));
 bind('btnArena', () => callTN('arena'));
 bind('btnFete', () => callTN('guildFete'));
 bind('btnHelp', () => callTN('guildHelp'));
@@ -92,11 +93,13 @@ bind('btnDice', () => callTN('dice'));
 bind('btnSnatch', () => callTN('gldSnatch'));
 bind('btnAbyss', () => callTN('abyss'));
 bind('btnClimb', () => callTN('towerClimb', [Number(document.getElementById('climbTimes').value) || 20]));
-bind('btnPb', () => callTN('dungeonFight', [
+bind('btnArenaN', () => callTN('arenaFight', [Number(document.getElementById('arenaTimes').value) || 1]));
+bind('btnPb',() => callTN('dungeonFight', [
   Number(document.getElementById('pbType').value),
   Number(document.getElementById('pbTimes').value) || 20,
 ]));
 bind('btnSpirit', () => callTN('spiritHarvest'));
+bind('btnRuins', () => callTN('ruinsGather'));
 bind('btnKfLol', () => callTN('kfLol'));
 bind('btnYin', () => callTN('extremeYin'));
 bind('btnMwPreview', () => callTN('mwPreview'));

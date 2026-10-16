@@ -30,6 +30,17 @@
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
   .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
   .card.dev h2 { color: var(--warn); }
+  /* Nhóm thu gọn: mặc định đóng, bấm tiêu đề để mở. */
+  details.card { padding: 0; }
+  details.card > summary { list-style: none; cursor: pointer; padding: 10px; display: flex; align-items: center; gap: 6px; user-select: none; }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary::before { content: '▸'; color: var(--muted); font-size: 11px; transition: transform .15s; }
+  details.card[open] > summary::before { transform: rotate(90deg); }
+  details.card > summary h2 { margin: 0; }
+  details.card > summary:hover h2 { color: var(--text); }
+  details.card > :not(summary) { margin-left: 10px; margin-right: 10px; }
+  details.card > :last-child { margin-bottom: 10px; }
+  details.card > textarea { width: calc(100% - 20px); }
 
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .grid + .grid, .row + .grid, .grid + .row { margin-top: 6px; }
@@ -68,8 +79,8 @@
     </div>
   </header>
 
-  <section class="card dev">
-    <h2>Thêm tính năng mới</h2>
+  <details class="card dev">
+    <summary><h2>Thêm tính năng mới</h2></summary>
     <ol class="guide">
       <li>Bấm <b>Bắt đầu ghi</b></li>
       <li>Trong game, làm tay tính năng đó 1–2 lượt</li>
@@ -82,10 +93,10 @@
     </div>
     <textarea id="code" style="margin-top:8px" placeholder="Dán code debug vào đây (biểu thức hoặc thân hàm có return)"></textarea>
     <div class="row"><button id="btnRun">Chạy code</button></div>
-  </section>
+  </details>
 
-  <section class="card">
-    <h2>Nhiệm vụ hàng ngày</h2>
+  <details class="card">
+    <summary><h2>Nhiệm vụ hàng ngày</h2></summary>
     <div class="row">
       <button id="btnAll" class="primary">Làm tất cả</button>
     </div>
@@ -104,19 +115,24 @@
       <button id="btnDice">Kiếm Hành</button>
       <button id="btnSnatch">Đoạt Bách Tông</button>
       <button id="btnAbyss">Vực U Minh</button>
+      <button id="btnExtra">Khác</button>
     </div>
     <div class="row" style="margin-top:6px">
       <button id="btnTasks">Xem DS nhiệm vụ</button>
       <button id="btnClaim">Nhận thưởng hết</button>
     </div>
-  </section>
+  </details>
 
-  <section class="card">
-    <h2>Hành động đặc biệt</h2>
+  <details class="card">
+    <summary><h2>Hành động đặc biệt</h2></summary>
     <div class="grid">
       <div class="climb">
         <button id="btnClimb">Leo tháp</button>
-        <input id="climbTimes" type="number" value="20" min="1"><span>lần</span>
+        <input id="climbTimes" type="number" value="100" min="1"><span>lần</span>
+      </div>
+      <div class="climb">
+        <button id="btnArenaN">Đấu Tiên Đài</button>
+        <input id="arenaTimes" type="number" value="20" min="1"><span>lần</span>
       </div>
       <div class="climb">
         <button id="btnPb">Phó bản ngày</button>
@@ -126,16 +142,17 @@
           <option value="3">PB EXP</option>
           <option value="2">PB Linh Thạch</option>
         </select>
-        <input id="pbTimes" type="number" value="20" min="1"><span>lần</span>
+        <input id="pbTimes" type="number" value="100" min="1"><span>lần</span>
       </div>
       <button id="btnSpirit">Linh thú</button>
+      <button id="btnRuins">Di tích 1 - Thu thập</button>
       <button id="btnKfLol">Tỉ Thí Thiên Đạo</button>
       <button id="btnYin">Cực Âm Địa</button>
     </div>
-  </section>
+  </details>
 
-  <section class="card">
-    <h2>Pháp bảo</h2>
+  <details class="card">
+    <summary><h2>Pháp bảo</h2></summary>
     <div class="grid">
       <button id="btnMwPreview">Xem phương án</button>
       <button id="btnMwOpt" class="primary">Tối ưu PB</button>
@@ -146,7 +163,7 @@
         <input id="benchTimes" type="number" value="10" min="1"><span>trận/lần</span>
       </div>
     </div>
-  </section>
+  </details>
 
   <section class="card result">
     <div class="row">
