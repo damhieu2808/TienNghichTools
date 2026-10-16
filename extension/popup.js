@@ -2,6 +2,7 @@
 
 const out = document.getElementById('out');
 const status = document.getElementById('status');
+const setStatus = (text, state) => { status.textContent = text; status.dataset.state = state; };
 
 async function getTabId() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -28,7 +29,7 @@ async function ensureTN(tabId) {
 
 // Gọi window.TN[name](...args) trong frame có game.
 async function callTN(name, args = []) {
-  status.textContent = 'Đang chạy...';
+  setStatus('Đang chạy...', 'run');
   out.value = '';
   try {
     const tabId = await getTabId();
@@ -41,14 +42,14 @@ async function callTN(name, args = []) {
     });
     const hit = results.find(r => r.result);
     if (!hit) {
-      status.textContent = 'Không tìm thấy game trong tab này (đã vào game chưa?)';
+      setStatus('Không tìm thấy game trong tab này (đã vào game chưa?)', 'err');
       return;
     }
     const res = hit.result.ok;
     out.value = typeof res === 'string' ? res : JSON.stringify(res, null, 2);
-    status.textContent = 'Xong';
+    setStatus('Xong', 'ok');
   } catch (e) {
-    status.textContent = 'Lỗi';
+    setStatus('Lỗi', 'err');
     out.value = String(e && e.message || e);
   }
 }
@@ -80,6 +81,7 @@ bind('btnDaily', () => callTN('dailyDungeon'));
 bind('btnTower', () => callTN('tower'));
 bind('btnDice', () => callTN('dice'));
 bind('btnSnatch', () => callTN('gldSnatch'));
+bind('btnAbyss', () => callTN('abyss'));
 bind('btnClimb', () => callTN('towerClimb', [Number(document.getElementById('climbTimes').value) || 20]));
 bind('btnSpirit', () => callTN('spiritHarvest'));
 bind('btnKfLol', () => callTN('kfLol'));
@@ -91,5 +93,5 @@ bind('btnRecStop', () => callTN('stopRecord'));
 bind('btnRun', () => callTN('runCode', [document.getElementById('code').value]));
 bind('btnCopy', async () => {
   await navigator.clipboard.writeText(out.value);
-  status.textContent = 'Đã copy';
+  setStatus('Đã copy', 'ok');
 });

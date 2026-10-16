@@ -679,6 +679,25 @@
     log(`PB Ngày: quét nhanh (${free} lượt miễn phí): ${r && r.res == 1 ? 'OK' : 'lỗi ' + errText(r)}`);
   }
 
+  // NV 18: Vực U Minh (YMAbyssCtrl) — đánh 1 trận ải kế tiếp, thắng thua đều tính nhiệm vụ.
+  async function abyss() {
+    if (!taskRemain(18)) return log('Vực U Minh: nhiệm vụ đã đủ');
+    const ctrl = YMAbyssCtrl.gInst();
+    ctrl.send32070();
+    await waitRecv(32070);
+    const cfg = ctrl.curChapterCfg;
+    if (!cfg) return log('Vực U Minh: đã qua hết ải');
+    await waitNotFighting();
+    const fight = waitRecv(14002, 10000);
+    ctrl.send32071(cfg.id);
+    const r = await waitRecv(11001, 10000);
+    if (!r || r.res != 1) return log(`Vực U Minh: đánh ải ${cfg.id} lỗi ${errText(r)}`);
+    const f = await fight;
+    await sleep(800);
+    await waitNotFighting();
+    log(`Vực U Minh: đánh ải ${cfg.id} - ${f && f.result == 1 ? 'thắng' : 'thua'}`);
+  }
+
   // Nâng cấp (buff) của Tứ Phái, xếp theo ưu tiên của user: giảm sát thương > thủ > hồi máu > công.
   // Danh sách lấy từ config skill_buff_data_json (10001–10009); id lạ xếp cuối.
   const BUFF_PRIORITY = [
@@ -837,6 +856,7 @@
       ['PB Ngày', dailyDungeon],
       ['Thông Thiên Tháp', tower],
       ['Kiếm Hành', dice],
+      ['Vực U Minh', abyss],
       ['Đoạt Bách Tông', gldSnatch],
       ['Nhận thưởng', claimAll],
     ];
@@ -873,6 +893,7 @@
     tower: action(tower),
     dice: action(dice),
     gldSnatch: action(gldSnatch),
+    abyss: action(abyss),
     towerClimb: action(towerClimb),
     spiritHarvest: action(spiritHarvest),
     kfLol: action(kfLol),

@@ -3,60 +3,92 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { width: 460px; font: 13px system-ui, sans-serif; margin: 10px; }
-  button { padding: 6px 10px; margin: 0 4px 6px 0; cursor: pointer; }
-  textarea { width: 100%; box-sizing: border-box; font: 12px Consolas, monospace; }
-  #code { height: 80px; }
-  #out { height: 300px; background: #f6f6f6; }
-  .row { margin-bottom: 8px; }
-  #status { color: #888; }
-  fieldset { border: 1px solid #ccc; border-radius: 6px; margin: 0 0 10px; padding: 6px 8px 2px; }
-  legend { font-weight: 600; padding: 0 4px; }
-  #btnAll { font-weight: 600; background: #2f7d32; color: #fff; border: 1px solid #276a2a; border-radius: 4px; }
-  #btnStop { background: #c62828; color: #fff; border: 1px solid #a51f1f; border-radius: 4px; }
-  .mode { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .mode label { cursor: pointer; padding: 3px 10px; border: 1px solid #bbb; border-radius: 12px; }
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #1f2328; --muted: #6b7280; --line: #e3e6ea;
+    --btn: #f3f4f6; --btn-hover: #e8eaee; --accent: #2f7d32; --accent-hover: #276a2a;
+    --danger: #c62828; --warn: #b26a00; --out: #fafbfc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17191c; --card: #212428; --text: #e6e8eb; --muted: #9aa1a9; --line: #33373c;
+      --btn: #2c3035; --btn-hover: #363b41; --accent: #3d9a41; --accent-hover: #46ac4a;
+      --danger: #e05252; --warn: #e0a040; --out: #1a1c1f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { width: 420px; margin: 0; padding: 10px; background: var(--bg); color: var(--text); font: 13px system-ui, sans-serif; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  h1 { font-size: 15px; margin: 0; }
+  .mode { display: flex; background: var(--btn); border-radius: 999px; padding: 2px; }
+  .mode label { cursor: pointer; padding: 3px 12px; border-radius: 999px; color: var(--muted); font-size: 12px; }
   .mode input { display: none; }
-  .mode input:checked + span { font-weight: 600; }
-  .mode label:has(input:checked) { background: #333; color: #fff; border-color: #333; }
+  .mode label:has(input:checked) { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
   body.mode-prod .dev { display: none; }
-  .dev legend { color: #b26a00; }
-  .guide { margin: 0 0 8px; padding-left: 18px; color: #444; }
-  .guide li { margin-bottom: 2px; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  .card.dev h2 { color: var(--warn); }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .grid + .grid, .row + .grid, .grid + .row { margin-top: 6px; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .grid button, .row button { padding: 7px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn); }
+  .grid button:hover, .row button:hover { background: var(--btn-hover); }
+  .row button { flex: 1; }
+  .primary { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff; font-weight: 600; }
+  .primary:hover { background: var(--accent-hover) !important; }
+  .danger { color: var(--danger); border-color: var(--danger) !important; font-weight: 600; }
+
+  .climb { display: flex; align-items: center; gap: 6px; grid-column: span 3; }
+  .climb button { flex: 1; }
+  .climb input { width: 56px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn); color: var(--text); font: inherit; }
+  .climb span { color: var(--muted); }
+
+  .guide { margin: 0 0 8px; padding-left: 18px; color: var(--muted); line-height: 1.5; }
+  textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--out); color: var(--text); font: 12px Consolas, monospace; padding: 6px; resize: vertical; }
+  #code { height: 70px; margin-bottom: 6px; }
+
+  .result .row { margin-bottom: 6px; }
+  #status { font-size: 12px; color: var(--muted); min-height: 16px; margin-bottom: 4px; }
+  #status[data-state=run] { color: var(--warn); }
+  #status[data-state=ok] { color: var(--accent); }
+  #status[data-state=err] { color: var(--danger); }
+  #out { height: 200px; }
 </style>
 </head>
 <body class="mode-prod">
-  <div class="mode">
-    <label><input type="radio" name="mode" value="prod"><span>Prod</span></label>
-    <label><input type="radio" name="mode" value="dev"><span>Dev</span></label>
-  </div>
+  <header>
+    <h1>TN Tool</h1>
+    <div class="mode">
+      <label><input type="radio" name="mode" value="prod">Prod</label>
+      <label><input type="radio" name="mode" value="dev">Dev</label>
+    </div>
+  </header>
 
-  <fieldset class="dev">
-    <legend>Thêm tính năng mới</legend>
+  <section class="card dev">
+    <h2>Thêm tính năng mới</h2>
     <ol class="guide">
       <li>Bấm <b>Bắt đầu ghi</b></li>
       <li>Trong game, làm tay tính năng đó 1–2 lượt</li>
-      <li>Bấm <b>Dừng &amp; xem log</b> → <b>Copy kết quả</b></li>
+      <li>Bấm <b>Dừng &amp; xem log</b> → <b>Copy</b></li>
       <li>Gửi log kèm luật chơi: khi nào dừng, ưu tiên gì, được/cấm tiêu gì</li>
     </ol>
     <div class="row">
       <button id="btnRecStart">Bắt đầu ghi</button>
       <button id="btnRecStop">Dừng &amp; xem log</button>
     </div>
-    <div class="row">
-      <textarea id="code" placeholder="Dán code debug vào đây (biểu thức hoặc thân hàm có return)"></textarea>
-      <button id="btnRun">Chạy code</button>
-    </div>
-  </fieldset>
+    <textarea id="code" style="margin-top:8px" placeholder="Dán code debug vào đây (biểu thức hoặc thân hàm có return)"></textarea>
+    <div class="row"><button id="btnRun">Chạy code</button></div>
+  </section>
 
-  <fieldset>
-    <legend>Nhiệm vụ hàng ngày</legend>
+  <section class="card">
+    <h2>Nhiệm vụ hàng ngày</h2>
     <div class="row">
-      <button id="btnAll">Làm tất cả</button>
-      <button id="btnTasks">Lấy DS nhiệm vụ ngày</button>
-      <button id="btnClaim">Nhận thưởng hết</button>
+      <button id="btnAll" class="primary">Làm tất cả</button>
     </div>
-    <div class="row">
+    <div class="grid">
       <button id="btnGift">Tặng tình bạn</button>
       <button id="btnFete">Cung phụng</button>
       <button id="btnHelp">Viện trợ</button>
@@ -69,30 +101,36 @@
       <button id="btnTower">Thông Thiên Tháp</button>
       <button id="btnDice">Kiếm Hành</button>
       <button id="btnSnatch">Đoạt Bách Tông</button>
+      <button id="btnAbyss">Vực U Minh</button>
     </div>
-  </fieldset>
+    <div class="row" style="margin-top:6px">
+      <button id="btnTasks">Xem DS nhiệm vụ</button>
+      <button id="btnClaim">Nhận thưởng hết</button>
+    </div>
+  </section>
 
-  <fieldset>
-    <legend>Hành động đặc biệt</legend>
-    <div class="row">
-      <button id="btnClimb">Leo tháp</button>
-      <input id="climbTimes" type="number" value="20" min="1" style="width:50px"> lần
-    </div>
-    <div class="row">
-      <button id="btnSpirit">Thu hoạch Linh thú</button>
+  <section class="card">
+    <h2>Hành động đặc biệt</h2>
+    <div class="grid">
+      <div class="climb">
+        <button id="btnClimb">Leo tháp</button>
+        <input id="climbTimes" type="number" value="20" min="1"><span>lần</span>
+      </div>
+      <button id="btnSpirit">Linh thú</button>
       <button id="btnKfLol">Tỉ Thí Thiên Đạo</button>
       <button id="btnYin">Cực Âm Địa</button>
     </div>
-  </fieldset>
+  </section>
 
-  <div class="row">
-    <button id="btnStop">Dừng</button>
-    <button id="btnPeek">Xem tiến trình</button>
-    <button id="btnCopy">Copy kết quả</button>
-    <span id="status"></span>
-  </div>
-
-  <textarea id="out" readonly></textarea>
+  <section class="card result">
+    <div class="row">
+      <button id="btnStop" class="danger">Dừng</button>
+      <button id="btnPeek">Xem tiến trình</button>
+      <button id="btnCopy">Copy</button>
+    </div>
+    <div id="status"></div>
+    <textarea id="out" readonly placeholder="Kết quả hiện ở đây"></textarea>
+  </section>
   <script src="popup.js"></script>
 </body>
 </html>
