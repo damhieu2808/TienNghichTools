@@ -181,10 +181,27 @@
     log(`Tặng tình bạn cho ${list.length} người: ${r && r.res != 0 ? 'OK' : 'lỗi ' + errText(r)}`);
   }
 
-  // NV 4: Đấu Tiên Đài — đánh đủ số trận còn thiếu, chọn đối thủ lực chiến thấp nhất.
+  // NV 4: Đấu Tiên Đài — đánh đủ ARENA_DAILY trận/ngày (nhiều hơn mức 3 của nhiệm vụ), chọn đối thủ lực chiến
+  // thấp nhất. Server không cho biết số trận hôm nay nên lấy max(tiến độ nhiệm vụ, số trận tool đã đánh hôm nay);
+  // tiến độ nhiệm vụ có thể dừng ở 3 nên tool tự đếm trong localStorage của game.
+  const ARENA_DAILY = 5;
+  const arenaKey = 'tnArenaDaily';
+  const today = () => new Date().toDateString();
+  const arenaDoneByTool = () => {
+    try {
+      const s = JSON.parse(localStorage.getItem(arenaKey) || '{}');
+      return s.day === today() ? s.count || 0 : 0;
+    } catch { return 0; }
+  };
+  const arenaCountUp = () => {
+    try { localStorage.setItem(arenaKey, JSON.stringify({ day: today(), count: arenaDoneByTool() + 1 })); } catch {}
+  };
   async function arena() {
-    const need = taskRemain(4);
-    if (!need) return log('Đấu Tiên Đài: nhiệm vụ đã đủ');
+    const t = getTask(4);
+    const done = Math.max(t ? t.progress || 0 : 0, arenaDoneByTool());
+    const need = ARENA_DAILY - done;
+    if (need <= 0) return log(`Đấu Tiên Đài: hôm nay đã đánh đủ ${ARENA_DAILY} trận`);
+    log(`Đấu Tiên Đài: hôm nay đã đánh ${done}/${ARENA_DAILY}, đánh thêm ${need} trận`);
     const ctrl = ArenaCtrl.gInst();
     for (let n = 1; n <= need; n++) {
       ctrl.send14201();
@@ -203,12 +220,19 @@
         }
       }
       const enemy = enemies.reduce((a, b) => (longVal(b.fc) < longVal(a.fc) ? b : a));
-      await waitNotFighting();
-      ctrl.reqChnlgeEmy(enemy.order, enemy.id);
-      const r = await waitRecv(14202, 10000);
+      // Server chặn bấm liên tục ("Thao tác nhanh quá rồi~", 100009): chờ rồi thử lại.
+      let r;
+      for (let tries = 0; tries < 4; tries++) {
+        await waitNotFighting();
+        ctrl.reqChnlgeEmy(enemy.order, enemy.id);
+        r = await waitRecv(14202, 10000);
+        if (!r || r.res == 1 || (r.msg != 100009 && r.code != 100009)) break;
+        await sleep(3000);
+      }
       if (!r || r.res != 1) return log(`Đấu Tiên Đài trận ${n}: lỗi ${errText(r)}`);
+      arenaCountUp();
       log(`Đấu Tiên Đài trận ${n}/${need}: đánh ${enemy.name} (LC ${longVal(enemy.fc)}) - xong`);
-      await sleep(1500);
+      await sleep(3000);
       await waitNotFighting();
     }
   }
@@ -418,39 +442,71 @@
     }
   }
 
-  // NV 6: Thông Thiên Tháp (DailyDungeon type 1) — quét tầng cao nhất đã qua bằng lượt miễn phí; thiếu thì
-  // mua lượt + quét (11007 type 2, game tự gửi lệnh quét), chỉ đủ nhiệm vụ và giá <= MAX_BUY_GOLD Tiên Ngọc.
+  // NV 6: Thông Thiên Tháp (DailyDungeon type 1) — còn lượt miễn phí thì quét tầng cao nhất đã qua; hết lượt
+  // (thường do PB Ngày đã quét nhanh) thì mua lượt + quét (11007 type 2, game tự gửi lệnh quét), chỉ khi giá
+  // <= MAX_BUY_GOLD Tiên Ngọc. getDungeonDataList của game có lúc lỗi "reading 'length'", khi đó không đọc được
+  // giá thì chỉ mua lượt đầu tiên trong ngày (giá FIRST_BUY_GOLD).
   async function tower() {
-    const MAX_BUY_GOLD = 20;
     const TOWER = 1;
+    const BASE = 1010000;
+    const MAX_BUY_GOLD = 20;
+    const FIRST_BUY_GOLD = 20;
     const need = taskRemain(6);
     if (!need) return log('Thông Thiên Tháp: nhiệm vụ đã đủ');
     const ctrl = DailyDungeonCtrl.gInst();
     for (let n = 1; n <= need; n++) {
       ctrl.send11004(TOWER);
       const info = await waitRecv(11004);
-      if (!info || !info.max_pass_dungoen_id) return log('Thông Thiên Tháp: không lấy được thông tin (chưa qua tầng nào?)');
+      if (!info) return log('Thông Thiên Tháp: không lấy được thông tin');
+      const free = ((ctrl.gDgnTypeCfg(TOWER) || {}).count || 0) - (info.enter_count || 0);
+      if (!info.max_pass_dungoen_id) return log('Thông Thiên Tháp: chưa qua tầng nào, không quét được');
       const id = info.max_pass_dungoen_id;
-      const free = ctrl.gDgnTypeCfg(TOWER).count - info.enter_count;
+      await waitNotFighting();
       let how;
       if (free > 0) {
         ctrl.send11005(id);
         how = `quét (còn ${free - 1} lượt miễn phí)`;
       } else {
-        if (!(info.total_buy_count > info.buy_count)) return log(`Thông Thiên Tháp: hết lượt và hết lượt mua, còn thiếu ${need - n + 1} lần`);
-        const item = (ctrl.getDungeonDataList(TOWER) || []).find(x => x.dungeon_baseVo && x.dungeon_baseVo.dungeon_id == id);
-        const cost = item ? item.cost_money : undefined;
-        if (cost == null) return log('Thông Thiên Tháp: hết lượt, không đọc được giá mua nên không mua');
-        if (cost > MAX_BUY_GOLD) return log(`Thông Thiên Tháp: hết lượt, mua thêm giá ${cost} Tiên Ngọc > giới hạn ${MAX_BUY_GOLD}, còn thiếu ${need - n + 1} lần`);
+        if (!(info.total_buy_count > (info.buy_count || 0))) return log(`Thông Thiên Tháp: hết lượt và hết lượt mua, còn thiếu ${need - n + 1} lần`);
+        let cost;
+        try {
+          const item = (ctrl.getDungeonDataList(TOWER) || []).find(x => x.dungeon_baseVo && x.dungeon_baseVo.dungeon_id == id);
+          cost = item ? item.cost_money : undefined;
+        } catch {}
+        if (cost == null && !info.buy_count) cost = FIRST_BUY_GOLD;
+        if (cost == null) return log(`Thông Thiên Tháp: hết lượt, không đọc được giá mua (đã mua ${info.buy_count} lần) nên không mua`);
+        if (cost > MAX_BUY_GOLD) return log(`Thông Thiên Tháp: mua thêm giá ${cost} Tiên Ngọc > giới hạn ${MAX_BUY_GOLD}, còn thiếu ${need - n + 1} lần`);
         ctrl.send11007(id, TOWER, 2);
         const b = await waitRecv(11007);
         if (!b || b.res != 1) return log(`Thông Thiên Tháp: mua lượt lỗi ${errText(b)}`);
         how = `mua lượt (${cost} Tiên Ngọc) + quét`;
       }
       const r = await waitRecv(11005);
-      if (!r || r.res != 1) return log(`Thông Thiên Tháp tầng ${id} lần ${n}: lỗi ${errText(r)}`);
-      log(`Thông Thiên Tháp tầng ${id} lần ${n}/${need}: ${how} - OK`);
-      await sleep(400);
+      if (!r || r.res != 1) return log(`Thông Thiên Tháp tầng ${id - BASE} lần ${n}: lỗi ${errText(r)}`);
+      log(`Thông Thiên Tháp tầng ${id - BASE} lần ${n}/${need}: ${how} - OK`);
+      await sleep(500);
+    }
+  }
+
+  // NV 5: Tác chiến nhanh (nút quickBtnClick, lệnh 14105 không tham số). Giá theo lượt trong ngày: miễn phí,
+  // 50, 100 Tiên Ngọc; server trả left_free_count / left_buy_count / next_cost cho lượt sau.
+  // Lượt đầu chưa biết giá nên suy từ tiến độ nhiệm vụ (đã làm p lượt -> lượt kế giá QUICK_COST[p]).
+  async function quickFight() {
+    const QUICK_COST = [0, 50, 100];
+    const MAX_GOLD = 100;
+    const need = taskRemain(5);
+    if (!need) return log('Tác chiến nhanh: nhiệm vụ đã đủ');
+    const t = getTask(5);
+    let cost = QUICK_COST[t ? t.progress : 0];
+    for (let n = 1; n <= need; n++) {
+      if (cost == null || cost > MAX_GOLD) return log(`Tác chiến nhanh: lượt kế giá ${cost ?? '?'} Tiên Ngọc > giới hạn ${MAX_GOLD}, còn thiếu ${need - n + 1} lần`);
+      await waitNotFighting();
+      NetMgr.gInst().sendMsg(14105, {});
+      const r = await waitRecv(14105, 10000);
+      if (!r || r.res != 1) return log(`Tác chiến nhanh lần ${n}: lỗi ${errText(r)}`);
+      log(`Tác chiến nhanh lần ${n}/${need}: ${cost ? cost + ' Tiên Ngọc' : 'miễn phí'} - OK`);
+      cost = r.left_free_count > 0 ? 0 : r.left_buy_count > 0 ? r.next_cost : null;
+      await sleep(1000);
     }
   }
 
@@ -804,6 +860,635 @@
     }
   }
 
+  // ---- Pháp bảo (HeroCtrl) ----
+  // Pháp bảo sở hữu: HeroCtrl.magicWeaponDic {base_id: sao}; số tướng đang đeo: wearMagicWeaponDic {base_id: n}.
+  // Config theo (base_id, sao) ở model.m_magicWeaponUpStarConfig: name, color, wear (số tướng được đeo cùng lúc),
+  // talent_desc (hiệu ứng, chỉ có dạng chữ). Tướng đeo ở hero.magic_weapon_list, 8 ô (pos 1–8) mở theo sao tướng.
+  // Tháo: 32006 {hero_id, list:[{item_id, pos}]}; đeo: 32005 {hero_id, type:1, list:[{item_id, pos}]}; item_id = base_id.
+  const strip = s => String(s == null ? '' : s).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  const mwCfg = (id, star) =>
+    Object.values(HeroCtrl.gInst().getCurlModel().m_magicWeaponUpStarConfig).find(c => c.base_id == id && c.star == star) || {};
+
+  // Nhãn theo câu chữ hiệu ứng. Nhãn không có ":" là loại giá trị (chấm theo vai trò); "cần:..." là điều kiện để món
+  // có tác dụng, "khi:..." là lúc món kích hoạt — hai loại này chỉ nhân hệ số ở mwScore / lúc chọn.
+  const MW_TAGS = [
+    [/^Công \+/, 'Công'],
+    [/^Thủ \+/, 'Thủ'],
+    [/^HP \+/, 'HP'],
+    [/^(Tỷ Lệ Bạo|ST Bạo) \+/, 'Bạo'],
+    [/^(Buff S\.Thương|S\.Thương KN|ST) \+|S\.Thương tăng|S\.Thương gây cho mục tiêu tăng|Công Thường kèm|^ST \[Thiêu Hồn|Khi gây \[Thiêu Hồn/, 'Sát thương'],
+    [/^(Giảm S\.Thương|Kháng Bạo|Miễn ST) \+|Khiên|miễn ST này|chịu tối đa|sẽ giảm 50%|ST giảm \d|S\.Thương lần này giảm|chặn hiệu quả|hồi mức HP|nguồn ST giảm/, 'Sống sót'],
+    [/Trị Liệu/, 'Trị liệu'],
+    [/gây S\.Thương cho nguồn|người tấn công thêm/, 'Phản đòn'],
+    [/Nộ Khí của mục tiêu giảm|lấy từ mục tiêu|mất 1 điểm Nộ|trừ 1 điểm Nộ|giảm Nộ địch/, 'Khóa Nộ'],
+    [/hồi 1 điểm Nộ|hồi cho .*Nộ|nhận 1 điểm Nộ|lấy từ mục tiêu 1 điểm Nộ/, 'Hồi Nộ'],
+    [/Khi gây \[Thiêu Hồn|^ST \[Thiêu Hồn/, 'cần:Thiêu Hồn'],
+    [/HP bản thân dưới/, 'cần:máu thấp'],
+    [/Khi tấn công ngoài hiệp/, 'cần:ngoài hiệp'],
+    [/Khi bạo kích/, 'cần:bạo'],
+    [/Mỗi khi giảm Nộ địch/, 'cần:giảm Nộ'],
+    [/Trị Liệu đơn/, 'cần:hồi đơn'],
+    [/Khi gây ST đơn/, 'cần:đánh đơn'],
+    [/^(Khi|Sau khi) (bị tấn công|chịu)|^Mỗi hiệp chịu|^Chịu ST|^Bản thân mỗi lần chịu|Khi bị diệt/, 'khi:bị đánh'],
+    [/Thiêu Hồn/, 'hệ:Thiêu Hồn'],
+  ];
+  const mwTags = desc => MW_TAGS.filter(([re]) => re.test(desc)).map(([, t]) => t);
+  const valueTags = tags => tags.filter(t => !t.includes(':'));
+
+  // Vai trò theo career (phái); trọng số mỗi nhãn theo vai trò. Đây là đánh giá chủ quan, chỉnh ở đây.
+  const ROLE = { 1: 'Sát thương', 2: 'Khống chế', 3: 'Đỡ đòn', 4: 'Hỗ trợ' };
+  const ROLE_W = {
+    'Sát thương': { Công: 1, Thủ: 0.2, HP: 0.3, Bạo: 1, 'Sát thương': 1, 'Sống sót': 0.5, 'Trị liệu': 0, 'Phản đòn': 0.1, 'Khóa Nộ': 0.7, 'Hồi Nộ': 1 },
+    'Khống chế': { Công: 0.6, Thủ: 0.3, HP: 0.5, Bạo: 0.5, 'Sát thương': 0.6, 'Sống sót': 0.7, 'Trị liệu': 0, 'Phản đòn': 0.2, 'Khóa Nộ': 1.2, 'Hồi Nộ': 1 },
+    'Đỡ đòn': { Công: 0.1, Thủ: 1, HP: 1, Bạo: 0.1, 'Sát thương': 0.2, 'Sống sót': 1.2, 'Trị liệu': 0, 'Phản đòn': 0.8, 'Khóa Nộ': 0.8, 'Hồi Nộ': 0.6 },
+    'Hỗ trợ': { Công: 0.6, Thủ: 0.5, HP: 0.7, Bạo: 0.1, 'Sát thương': 0.1, 'Sống sót': 0.9, 'Trị liệu': 1.2, 'Phản đòn': 0.2, 'Khóa Nộ': 0.5, 'Hồi Nộ': 0.8 },
+  };
+  const COLOR_Q = { 3: 1, 4: 1.6, 5: 2.4, 6: 3.2 };
+  // Độ mạnh của món: món chỉ số thuần ("X +n%" hoặc "X +n%, Y +m%") tính theo %, món hiệu ứng tính theo màu và sao.
+  const mwPower = (cfg, star) => {
+    const desc = strip(cfg.talent_desc);
+    const pcts = (desc.match(/[\d.]+(?=%)/g) || []).map(Number);
+    if (/^[^+,.]+ \+[\d.]+%(, [^+,.]+ \+[\d.]+%)*$/.test(desc)) return (Math.max(...pcts) / 5) * (1 + 0.5 * (pcts.length - 1));
+    return (COLOR_Q[cfg.color] || 1) * (1 + 0.1 * star);
+  };
+
+  const skillOf = id => {
+    try { return FightCtrl.gInst().getCurlModel().getSkillData(id) || {}; } catch { return {}; }
+  };
+  // Vị trí trong đội hình (14012): ô 1–3 hàng trước (chịu đòn trước), 4–6 hàng sau. Lỗi thì trả {} (không xét hàng).
+  const mwFormation = async () => {
+    const p = waitRecv(14012, 3000);
+    NetMgr.gInst().sendMsg(14012, { type: 1, sign: 21 });
+    const r = await p;
+    const pos = {};
+    ((r && r.pos_list) || []).forEach(x => (pos[x.id] = x.pos));
+    return pos;
+  };
+
+  // Thiên phú đã mở của tướng + mô tả vai trò của game (base config "position", vd "S.Thương Vật Lý Hồi Nộ").
+  // Thiên phú: model.getHeroTalentData() {id: {base_id, level, dec, active_talent_id}}, mở khi level <= cấp
+  // thiên phú hiện tại (getHeroTalentLevDataByStarAndStage(sao, bậc).level). active_talent_id là skill nội tại.
+  // Bỏ các dòng chỉ cộng chỉ số ("[Bậc 1 kích hoạt] Công +150."), chỉ giữ dòng có cơ chế.
+  const mwHeroTalents = h => {
+    const hc = HeroCtrl.gInst(), m = hc.getCurlModel();
+    let position = '', talents = [];
+    try {
+      const base = (m.getHeroBaseData() || {})[h.base_id] || {};
+      position = strip([base.position, base.position2].filter(Boolean).join(', '));
+    } catch {}
+    try {
+      const lv = (hc.getHeroTalentLevDataByStarAndStage(h.star, h.stage) || {}).level || h.star;
+      for (const t of Object.values(m.getHeroTalentData() || {})) {
+        if (t.base_id != h.base_id || t.level > lv) continue;
+        const dec = strip(t.dec).replace(/^\[[^\]]*\]\s*/, '');
+        if (dec && !/^(Sau khi xuất chiến, )?([^,:]+ \+[\d.]+%?(, |\.?$))+$/.test(dec)) talents.push(dec);
+        for (const id of String(t.active_talent_id || '').split(/[^\d]+/).filter(Boolean)) {
+          const d = strip(skillOf(Number(id)).desc);
+          if (d && !talents.includes(d)) talents.push(d);
+        }
+      }
+    } catch {}
+    return { position, talents };
+  };
+
+  // Đọc đặc điểm tướng từ mô tả đòn thường (N) và skill nộ (K); đòn thường dùng nhiều hơn nên nặng 70%.
+  // Các đặc điểm chung (Thiêu Hồn, Nộ, phản kích...) đọc từ toàn bộ: 2 skill + thiên phú + mô tả vai trò.
+  const mwHeroInfo = (h, maxFc, formation) => {
+    const attrs = {};
+    (h.attr_list || []).forEach(a => (attrs[a.key] = a.value));
+    let N = '', K = '';
+    try {
+      (HeroCtrl.gInst().gHSkill(h.base_id) || []).forEach(s => {
+        const d = skillOf(s.skillId);
+        if (d.type == 2) K = strip(d.desc); else N = N || strip(d.desc);
+      });
+    } catch {}
+    const { position, talents } = mwHeroTalents(h);
+    const all = [N, K, position, ...talents].join(' ');
+    const isHeal = t => /hồi phục|Trị liệu|hồi .{0,20}HP|lượng hồi/i.test(t);
+    const healOne = t => isHeal(t) && /Trị liệu 1 |(hồi phục|hồi) cho 1 |1 đồng đội có lượng (máu|HP)/i.test(t);
+    const isSingle = t => !isHeal(t) && /đơn thể|ngẫu nhiên 1 mục tiêu|^Tấn công 1 /i.test(t);
+    const pos = formation[h.id];
+    const f = {
+      role: ROLE[h.career] || 'Sát thương',
+      row: !pos ? '' : pos <= 3 ? 'trước' : 'sau',
+      pos,
+      heals: isHeal(N) || isHeal(K), // chỉ xét 2 skill: thiên phú tự hồi máu không làm tướng thành người hồi máu
+      healOneShare: 0.7 * healOne(N) + 0.3 * healOne(K),
+      healByAtk: /(hồi|Trị liệu|hồi phục).{0,80}bằng \d+% (công|tấn công)/i.test(`${N} ${K}`),
+      singleShare: 0.7 * isSingle(N) + 0.3 * isSingle(K),
+      angerKN: /Nộ cao hơn|cứ 1 điểm Nộ/i.test(all), // sát thương tăng theo Nộ
+      cutsAnger: /(giảm|trừ|mất) .{0,15}Nộ/i.test(all),
+      taunt: /Khiêu Khích/i.test(all),
+      burn: (all.match(/Thiêu Hồn/g) || []).length, // số lần nhắc tới Thiêu Hồn trong skill + thiên phú
+      outTurn: /phản kích|truy kích|ngoài hiệp|liên kích/i.test(all),
+      crit: (attrs[77] || 0) / 10000, // TL Bạo
+      alwaysCrit: /luôn bạo kích|tất bạo|chắc chắn (gây )?bạo/i.test(all),
+      // Gây sát thương chủ yếu bằng đòn thường: game ghi trong vai trò, hoặc skill + thiên phú nhắc nhiều lần.
+      normalFocus: /Công Thường/i.test(position) || (all.match(/Công Thường|đánh thường/gi) || []).length >= 3,
+    };
+    // Trọng số: theo vai trò; đứng hàng trước mà không phải tướng đỡ đòn thì lấy trung bình với trọng số đỡ đòn.
+    const w = { ...ROLE_W[f.role] };
+    if (f.row == 'trước' && f.role != 'Đỡ đòn') for (const k in w) w[k] = (w[k] + ROLE_W['Đỡ đòn'][k]) / 2;
+    if (f.healByAtk) w.Công = Math.max(w.Công, 1);
+    if (!f.heals) w['Trị liệu'] = 0;
+    if (f.angerKN) { w['Hồi Nộ'] *= 1.3; w['Khóa Nộ'] *= 1.3; }
+    return { h, ...f, w, N, K, position, talents, text: all, weight: 0.6 + 0.4 * longVal(h.fc) / maxFc }; // tướng mạnh hơn được lợi nhiều hơn
+  };
+  const heroTraits = hi => [
+    hi.carry && 'CARRY',
+    hi.row && `hàng ${hi.row} (ô ${hi.pos})`,
+    hi.singleShare > 0 && `đánh đơn ${Math.round(hi.singleShare * 100)}%`,
+    hi.heals && (hi.healOneShare > 0 ? `hồi 1 người ${Math.round(hi.healOneShare * 100)}%` : 'hồi cả đội'),
+    hi.healByAtk && 'hồi theo Công',
+    hi.angerKN && 'KN mạnh theo Nộ',
+    hi.cutsAnger && 'skill giảm Nộ địch',
+    hi.taunt && 'khiêu khích',
+    hi.burn && `Thiêu Hồn (nhắc ${hi.burn} lần)`,
+    hi.alwaysCrit && 'có lúc luôn bạo kích',
+    hi.normalFocus && 'thiên về đòn thường',
+  ].filter(Boolean).join(', ');
+
+  // Trùng hiệu ứng: món có hiệu ứng mà tướng đã tự có trong skill/thiên phú thì gần như thừa.
+  // [hiệu ứng món, hiệu ứng tướng, hệ số]
+  const MW_OVERLAP = [
+    [/dẫn đến Chí Mạng, miễn/, /chịu (sát thương|S\.Thương|ST) (chí mạng|bạo)[^.]{0,20}miễn/i, 0.2],
+    [/chặn hiệu quả này/, /xóa bỏ toàn bộ khống chế|miễn (nhiễm )?(khống chế|debuff)/i, 0.6],
+    [/Khi vào trận, nhận 1 điểm Nộ/, /(vào trận|xuất chiến|bắt đầu trận)[^.]{0,30}(nhận|hồi|tăng) \d+ điểm Nộ/i, 0.6],
+  ];
+
+  // Điểm cố định của món với tướng (chưa xét các món khác đã chọn).
+  const mwScore = (item, hi, team) => {
+    const tags = valueTags(item.tags);
+    if (!tags.length) return 0;
+    const has = t => item.tags.includes(t);
+    // Món Thiêu Hồn trên tướng có Thiêu Hồn: sát thương Thiêu Hồn là cốt lõi bộ skill, nên tính đủ trọng số
+    // như tướng sát thương dù đứng hàng nào.
+    const burnCore = has('hệ:Thiêu Hồn') && hi.burn;
+    let s = tags.reduce((a, t) => a + (burnCore ? Math.max(hi.w[t] || 0, ROLE_W['Sát thương'][t]) : hi.w[t] || 0), 0) / tags.length;
+    if (has('cần:Thiêu Hồn') && !hi.burn) s = 0;
+    // Cộng hưởng cả đội: mỗi tướng Thiêu Hồn trong đội (ngoài người đeo) làm món Thiêu Hồn mạnh thêm 20%.
+    if (has('hệ:Thiêu Hồn') && team.burn) s *= 1 + 0.2 * (team.burn - (hi.burn ? 1 : 0));
+    // Tướng xoay quanh Thiêu Hồn (nhắc ≥ 3 lần trong skill + thiên phú) cần món Thiêu Hồn hơn nữa.
+    if (has('hệ:Thiêu Hồn') && hi.burn >= 3) s *= 1.3;
+    for (const [itemRe, heroRe, k] of MW_OVERLAP) if (itemRe.test(item.desc) && heroRe.test(hi.text)) s *= k;
+    // Tướng tự luôn bạo kích (vd Đằng Nhất khi Nộ ≥ 5): tỉ lệ bạo gần như thừa, chỉ còn phần ST Bạo có ích.
+    if (hi.alwaysCrit && /Tỷ Lệ Bạo \+/.test(item.desc)) s *= /ST Bạo|S\.Thương Bạo/.test(item.desc) ? 0.7 : 0.3;
+    // Tướng thiên về đòn thường: món tăng đòn thường mạnh hơn, món tăng sát thương KN yếu đi.
+    if (hi.normalFocus && /^Công Thường|Khi Công Thường/.test(item.desc)) s *= 1.3;
+    if (hi.normalFocus && /S\.Thương KN/.test(item.desc)) s *= 0.7;
+    if (has('cần:máu thấp')) s *= 0.7;
+    if (has('cần:ngoài hiệp') && !hi.outTurn) s *= 0.4;
+    if (has('cần:hồi đơn')) s *= 0.3 + 0.7 * hi.healOneShare;
+    if (has('cần:đánh đơn')) s *= 0.2 + 0.8 * hi.singleShare;
+    if (has('khi:bị đánh')) s *= (hi.row == 'trước' ? 1.25 : hi.row == 'sau' ? 0.7 : 1) * (hi.taunt ? 1.2 : 1);
+    if (tags.includes('Sống sót') && !team.healers) s *= 1.2; // đội không có ai hồi máu
+    return s * item.power * hi.weight;
+  };
+  // Hệ số theo các món đã chọn cho cùng tướng: món cùng nhãn giảm dần (đồ cân đối), món cần nguồn giảm Nộ thì
+  // chỉ đủ điểm khi tướng có skill giảm Nộ / là khống chế / đã có món Khóa Nộ, tỉ lệ bạo cộng thêm từ món Bạo đã chọn.
+  const SAME_TAG_DECAY = 0.85;
+  const CARRY_BONUS = 1.5;
+  const mwDynamic = (x, hi, tagCount) => {
+    let s = x.s * SAME_TAG_DECAY ** Math.max(0, ...valueTags(x.it.tags).map(t => tagCount[t] || 0));
+    if (x.it.tags.includes('cần:giảm Nộ') && !(hi.cutsAnger || hi.role == 'Khống chế' || tagCount['Khóa Nộ'])) s *= 0.5;
+    if (x.it.tags.includes('cần:bạo') && !hi.alwaysCrit) s *= Math.min(1, 0.3 + hi.crit + 0.1 * (tagCount['Bạo'] || 0));
+    return s;
+  };
+
+  const mwItems = () => {
+    const hc = HeroCtrl.gInst();
+    return Object.keys(hc.magicWeaponDic).map(id => {
+      const star = hc.magicWeaponDic[id];
+      const cfg = mwCfg(id, star);
+      const desc = strip(cfg.talent_desc);
+      // Config ghi wear = 0 ở mức sao tối đa; các mức khác wear = sao + 1. Server từ chối thì coi như hết chỗ.
+      return { id: Number(id), name: cfg.name || id, star, desc, tags: mwTags(desc), power: mwPower(cfg, star), cap: cfg.wear || star + 1 };
+    });
+  };
+  // Mọi tướng (để tháo hết) và đội hình xếp theo lực chiến giảm dần (để đeo).
+  const mwHeroes = () => {
+    const hc = HeroCtrl.gInst();
+    const ids = new Set([...(hc.getHeroDataByRealm(0) || []), ...(hc.szHeroList || [])].map(h => h.id));
+    const all = [...ids].map(id => hc.getHeroDataByHeroId(id)).filter(Boolean);
+    const team = (hc.szHeroList || []).map(x => hc.getHeroDataByHeroId(x.id) || x)
+      .sort((a, b) => longVal(b.fc) - longVal(a.fc));
+    return { all, team };
+  };
+  const openPos = h => [1, 2, 3, 4, 5, 6, 7, 8].filter(p => h.star >= HeroCtrl.gInst().getOpenPosNeedStar(p));
+
+  // Điểm của cả bộ món trên một tướng: xét lần lượt từ món điểm gốc cao nhất, áp hệ số theo các món trước đó.
+  const mwSetScore = (hi, xs) => {
+    const tagCount = {};
+    return xs.slice().sort((a, b) => b.s - a.s).map(x => {
+      const s = mwDynamic(x, hi, tagCount);
+      x.it.tags.forEach(t => (tagCount[t] = (tagCount[t] || 0) + 1));
+      return { ...x, s };
+    });
+  };
+  const sumS = xs => xs.reduce((a, x) => a + x.s, 0);
+
+  // Lập phương án: (1) tướng lực chiến cao chọn trước, mỗi tướng lấy lần lượt món có điểm cao nhất còn chỗ;
+  // (2) tối ưu cả đội: thử thay 1 món bằng món còn chỗ, hoặc đổi chéo 2 món giữa 2 tướng, giữ thay đổi nào làm
+  // tổng điểm cả đội tăng, lặp tới khi hết cải thiện.
+  const mwPlan = async () => {
+    const items = mwItems();
+    const { team } = mwHeroes();
+    const formation = await mwFormation();
+    const maxFc = Math.max(...team.map(h => longVal(h.fc)), 1);
+    const infos = team.map(h => mwHeroInfo(h, maxFc, formation));
+    // Carry: tướng gây sát thương (phái Sát thương/Khống chế, không hồi máu) không đứng hàng trước. Được ưu tiên
+    // giành đồ (điểm × CARRY_BONUS, chọn trước); carry phái Khống chế coi trọng cả đồ sát thương như phái Sát thương.
+    for (const hi of infos) {
+      if (!['Sát thương', 'Khống chế'].includes(hi.role) || hi.heals || hi.row == 'trước') continue;
+      hi.carry = true;
+      hi.weight *= CARRY_BONUS;
+      if (hi.role == 'Khống chế') for (const k in hi.w) hi.w[k] = Math.max(hi.w[k], ROLE_W['Sát thương'][k]);
+    }
+    infos.sort((a, b) => b.weight - a.weight);
+    const teamCtx = { healers: infos.filter(hi => hi.heals).length, burn: infos.filter(hi => hi.burn).length };
+    const left = {};
+    items.forEach(it => (left[it.id] = it.cap));
+    const P = infos.map(hi => {
+      const ranked = items.map(it => ({ it, s: mwScore(it, hi, teamCtx) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s);
+      const pos = openPos(hi.h);
+      const sel = [];
+      while (sel.length < pos.length) {
+        let best = null, bestS = 0;
+        const base = sumS(mwSetScore(hi, sel));
+        for (const x of ranked) {
+          if (!(left[x.it.id] > 0) || sel.includes(x)) continue;
+          const gain = sumS(mwSetScore(hi, [...sel, x])) - base;
+          if (gain > bestS) [best, bestS] = [x, gain];
+        }
+        if (!best) break;
+        sel.push(best);
+        left[best.it.id]--;
+      }
+      return { hi, pos, ranked, sel, score: sumS(mwSetScore(hi, sel)) };
+    });
+
+    const byId = (p, id) => p.ranked.find(x => x.it.id == id);
+    const has = (p, id) => p.sel.some(x => x.it.id == id);
+    for (let round = 0, improved = true; improved && round < 50; round++) {
+      improved = false;
+      for (const p of P) {
+        for (let i = 0; i < p.sel.length; i++) {
+          const a = p.sel[i];
+          // Thay a bằng món còn chỗ.
+          for (const b of p.ranked) {
+            if (!(left[b.it.id] > 0) || has(p, b.it.id)) continue;
+            const sel = p.sel.map((x, k) => (k == i ? b : x));
+            const sc = sumS(mwSetScore(p.hi, sel));
+            if (sc > p.score + 1e-6) {
+              left[a.it.id]++; left[b.it.id]--;
+              Object.assign(p, { sel, score: sc });
+              improved = true;
+              break;
+            }
+          }
+          const a2 = p.sel[i];
+          // Đổi chéo a2 của p với món của tướng q.
+          for (const q of P) {
+            if (q == p || has(q, a2.it.id)) continue;
+            const qa = byId(q, a2.it.id);
+            if (!qa) continue;
+            for (let j = 0; j < q.sel.length; j++) {
+              const b = q.sel[j];
+              const pb = byId(p, b.it.id);
+              if (!pb || has(p, b.it.id)) continue;
+              const selP = p.sel.map((x, k) => (k == i ? pb : x));
+              const selQ = q.sel.map((x, k) => (k == j ? qa : x));
+              const sp = sumS(mwSetScore(p.hi, selP)), sq = sumS(mwSetScore(q.hi, selQ));
+              if (sp + sq > p.score + q.score + 1e-6) {
+                Object.assign(p, { sel: selP, score: sp });
+                Object.assign(q, { sel: selQ, score: sq });
+                improved = true;
+                break;
+              }
+            }
+            if (p.sel[i] != a2) break;
+          }
+        }
+      }
+    }
+    return P.map(({ hi, pos, ranked, sel }) => {
+      const pick = mwSetScore(hi, sel).sort((a, b) => b.s - a.s);
+      // Thứ tự đeo thật: các món đã chọn, rồi tới các món còn lại để thế chỗ khi server từ chối.
+      const order = [...pick, ...ranked.filter(x => !sel.includes(x))];
+      return { hi, pos, pick, order };
+    });
+  };
+  const planText = plan => plan.map(({ hi, pick }) =>
+    `## ${hi.h.name} (${hi.role}${hi.position ? ` — game ghi: ${hi.position}` : ''}, LC ${longVal(hi.h.fc)})\n` +
+    `  đọc được: ${heroTraits(hi) || '-'}\n` +
+    hi.talents.map(t => `  · thiên phú: ${t.length > 140 ? t.slice(0, 140) + '…' : t}\n`).join('') +
+    pick.map(x => `  ${x.s.toFixed(2)} ${x.it.name} ★${x.it.star} [${x.it.tags.join(', ')}]`).join('\n')).join('\n');
+
+  async function mwPreview() {
+    const plan = await mwPlan();
+    const total = plan.reduce((a, p) => a + sumS(p.pick), 0);
+    const burn = plan.filter(p => p.hi.burn).length;
+    return `PHƯƠNG ÁN (chưa đeo gì, điểm càng cao càng hợp) — tổng điểm đội ${total.toFixed(2)}` +
+      `${burn ? `, đội có ${burn} tướng Thiêu Hồn` : ''}:\n` + planText(plan);
+  }
+
+  // Tháo hết pháp bảo của mọi tướng. Lưu lại trạng thái cũ vào localStorage của trang game để khôi phục.
+  async function mwUnequipAll() {
+    const { all } = mwHeroes();
+    const backup = {};
+    for (const h of all) {
+      const list = (h.magic_weapon_list || []).map(w => ({ item_id: w.base_id, pos: w.pos }));
+      if (!list.length) continue;
+      backup[h.id] = list;
+      NetMgr.gInst().sendMsg(32006, { hero_id: h.id, list });
+      const r = await waitRecv(32006);
+      if (!r || r.res != 1) log(`Tháo PB của ${h.name}: lỗi ${errText(r)}`);
+      await sleep(200);
+    }
+    return backup;
+  }
+  const mwEquip = async (h, item_id, pos) => {
+    NetMgr.gInst().sendMsg(32005, { hero_id: h.id, type: 1, list: [{ item_id, pos }] });
+    const r = await waitRecv(32005);
+    await sleep(200);
+    return r && r.res == 1 ? null : errText(r);
+  };
+
+  async function mwOptimize() {
+    stopFlag = false;
+    await mwApplyPlan(await mwPlan());
+  }
+
+  // Tháo hết (lưu bản khôi phục) rồi đeo theo phương án.
+  async function mwApplyPlan(plan) {
+    const backup = await mwUnequipAll();
+    try { localStorage.setItem('__tnMwBackup', JSON.stringify(backup)); } catch {}
+    log(`Đã tháo pháp bảo của ${Object.keys(backup).length} tướng (đã lưu để khôi phục)`);
+    const left = {};
+    mwItems().forEach(it => (left[it.id] = it.cap));
+    // Đeo lại theo thứ tự lực chiến; món bị server từ chối thì coi như hết chỗ, lấy món kế tiếp.
+    for (const { hi, pos, order } of plan) {
+      const got = [];
+      let i = 0;
+      for (const p of pos) {
+        if (stopFlag) return log('Tối ưu PB: đã dừng');
+        while (i < order.length) {
+          const x = order[i++];
+          if (!(left[x.it.id] > 0)) continue;
+          const err = await mwEquip(hi.h, x.it.id, p);
+          if (err) {
+            left[x.it.id] = 0;
+            log(`  ${hi.h.name}: không đeo được ${x.it.name} (${err}), bỏ qua món này`);
+            continue;
+          }
+          left[x.it.id]--;
+          got.push(`${x.it.name} (${x.s.toFixed(2)})`);
+          break;
+        }
+      }
+      log(`${hi.h.name} [${hi.role}]: ${got.join(', ') || '(không có món nào)'}`);
+    }
+    log('Tối ưu PB: xong. Muốn trả lại như cũ thì bấm "Khôi phục PB"');
+  }
+
+  // ---- Đo sức mạnh bằng đánh tháp ----
+  // Kết quả trận 14002: result 1 thắng / 2 thua, round_list (mỗi hiệp 1 phần tử), max_round, role_list (group 1 = ta,
+  // khác = địch; hero_list có hp_max), hero_stat (mỗi tướng: total_dmg, total_heal, is_die...).
+  const fightStat = f => {
+    const enemyHp = (f.role_list || []).filter(r => r.group != 1)
+      .flatMap(r => r.hero_list || []).reduce((a, h) => a + longVal(h.hp_max), 0);
+    const mine = (f.hero_stat || []).filter(s => s.group == 1);
+    const dmg = mine.reduce((a, s) => a + longVal(s.total_dmg), 0);
+    const win = f.result == 1;
+    const rounds = (f.round_list || []).length || f.round || 0;
+    const dmgPct = enemyHp ? Math.min(1, dmg / enemyHp) : 0;
+    // Điểm trận: thua = tỉ lệ máu địch bị hạ (0–1); thắng = 1 + thưởng thắng nhanh (tối đa +0.5).
+    const score = win ? 1 + 0.5 * (1 - rounds / (f.max_round || 10)) : dmgPct;
+    return { win, rounds, dmgPct, score, heroes: mine.map(s => ({ name: s.name, dmg: longVal(s.total_dmg), heal: longVal(s.total_heal), die: !!s.is_die })) };
+  };
+
+  // Đánh ải tháp kế tiếp `times` lần (không tốn tài nguyên), trả về thống kê từng trận.
+  // Thắng thì tháp lên tầng (địch mạnh hơn) — điểm theo % máu địch nên vẫn so được giữa các tầng gần nhau.
+  async function benchTower(times) {
+    const ctrl = DailyDungeonCtrl.gInst();
+    const res = [];
+    for (let n = 1; n <= times; n++) {
+      if (stopFlag) break;
+      ctrl.send11004(1);
+      const info = await waitRecv(11004);
+      if (!info || !info.max_pass_dungoen_id) { log('Đo: không lấy được thông tin tháp'); break; }
+      const id = info.max_pass_dungoen_id + 1;
+      await waitNotFighting();
+      const fight = waitRecv(14002, 15000);
+      ctrl.send11001(id, 0);
+      const r = await waitRecv(11001, 10000);
+      if (!r || r.res != 1) { log(`Đo: tầng ${id - 1010000} lỗi ${errText(r)}`); break; }
+      const f = await fight;
+      await sleep(800);
+      await waitNotFighting();
+      if (!f) continue;
+      const st = fightStat(f);
+      res.push(st);
+      log(`  trận ${n}: tầng ${id - 1010000} ${st.win ? 'THẮNG' : 'thua'}, ${st.rounds} hiệp, hạ ${(st.dmgPct * 100).toFixed(1)}% máu địch`);
+    }
+    return res;
+  }
+  const fmtNum = v => (v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(0) + 'K' : String(Math.round(v)));
+  const benchSummary = (label, res) => {
+    if (!res.length) return { score: -1, text: `${label}: không có trận nào` };
+    const avg = f => res.reduce((a, x) => a + f(x), 0) / res.length;
+    const per = {};
+    res.forEach(x => x.heroes.forEach(h => {
+      const p = per[h.name] || (per[h.name] = { dmg: 0, heal: 0, die: 0 });
+      p.dmg += h.dmg; p.heal += h.heal; p.die += h.die ? 1 : 0;
+    }));
+    const score = avg(x => x.score);
+    return {
+      score,
+      text: `${label}: điểm ${score.toFixed(3)}, thắng ${res.filter(x => x.win).length}/${res.length}, ` +
+        `hạ TB ${(avg(x => x.dmgPct) * 100).toFixed(1)}% máu địch, TB ${avg(x => x.rounds).toFixed(1)} hiệp\n` +
+        Object.entries(per).map(([n, p]) =>
+          `    ${n}: ST TB ${fmtNum(p.dmg / res.length)}${p.heal ? `, hồi TB ${fmtNum(p.heal / res.length)}` : ''}, chết ${p.die}/${res.length}`).join('\n'),
+    };
+  };
+
+  // ---- Thử nghiệm bộ đồ bằng đánh tháp ----
+  // Bộ đồ (cfg) = {heroId: [base_id theo thứ tự ô mở]} cho các tướng đội hình. Kết quả lưu ở localStorage của trang
+  // game ('__tnMwLab'), gắn với đội hình + pháp bảo sở hữu (đổi đội/lên sao pháp bảo thì bắt đầu lại).
+  const LAB_KEY = '__tnMwLab';
+  const cfgKey = cfg => Object.keys(cfg).sort().map(id => `${id}:${cfg[id].slice().sort().join(',')}`).join('|');
+  const labSig = () => {
+    const hc = HeroCtrl.gInst();
+    const team = (hc.szHeroList || []).map(x => x.id).sort().join(',');
+    const items = Object.keys(hc.magicWeaponDic).sort().map(id => `${id}*${hc.magicWeaponDic[id]}`).join(',');
+    return `${team}|${items}`;
+  };
+  const labLoad = () => {
+    let lab = null;
+    try { lab = JSON.parse(localStorage.getItem(LAB_KEY)); } catch {}
+    return lab && lab.sig == labSig() ? lab : { sig: labSig(), results: [] };
+  };
+  const labSave = lab => { try { localStorage.setItem(LAB_KEY, JSON.stringify(lab)); } catch {} };
+
+  const curConfig = () => {
+    const hc = HeroCtrl.gInst();
+    const cfg = {};
+    for (const x of hc.szHeroList || []) {
+      const h = hc.getHeroDataByHeroId(x.id) || x;
+      cfg[h.id] = (h.magic_weapon_list || []).slice().sort((a, b) => a.pos - b.pos).map(w => w.base_id);
+    }
+    return cfg;
+  };
+  const itemName = id => (mwItems().find(it => it.id == id) || {}).name || id;
+
+  // Đeo bộ đồ cfg: chỉ đụng tới tướng có thay đổi — tháo hết các tướng đó trước (trả chỗ), rồi đeo lại.
+  async function applyConfig(cfg) {
+    const hc = HeroCtrl.gInst();
+    const cur = curConfig();
+    const changed = Object.keys(cfg).filter(id => cur[id] && cfgKey({ x: cur[id] }) != cfgKey({ x: cfg[id] }));
+    for (const id of changed) {
+      const h = hc.getHeroDataByHeroId(Number(id));
+      const list = (h.magic_weapon_list || []).map(w => ({ item_id: w.base_id, pos: w.pos }));
+      if (!list.length) continue;
+      NetMgr.gInst().sendMsg(32006, { hero_id: h.id, list });
+      const r = await waitRecv(32006);
+      if (!r || r.res != 1) log(`  tháo PB ${h.name}: lỗi ${errText(r)}`);
+      await sleep(200);
+    }
+    for (const id of changed) {
+      const h = hc.getHeroDataByHeroId(Number(id));
+      const pos = openPos(h);
+      for (let i = 0; i < cfg[id].length && i < pos.length; i++) {
+        const err = await mwEquip(h, cfg[id][i], pos[i]);
+        if (err) log(`  ${h.name}: không đeo được ${itemName(cfg[id][i])} (${err})`);
+      }
+    }
+  }
+
+  // Biến đổi 1 bước từ bộ đồ base: thay 1 món của 1 tướng bằng món khác trong top điểm luật của tướng đó (còn chỗ),
+  // hoặc (30%) đổi chéo 2 món giữa 2 tướng. Trả về [cfg mới, mô tả].
+  const mutate = (base, plan, caps) => {
+    const cfg = {};
+    for (const id in base) cfg[id] = base[id].slice();
+    const used = {};
+    Object.values(cfg).flat().forEach(id => (used[id] = (used[id] || 0) + 1));
+    const P = plan.filter(p => cfg[p.hi.h.id] && cfg[p.hi.h.id].length);
+    const rnd = a => a[Math.floor(Math.random() * a.length)];
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (Math.random() < 0.3 && P.length > 1) {
+        const p = rnd(P), q = rnd(P.filter(x => x != p));
+        const A = cfg[p.hi.h.id], B = cfg[q.hi.h.id];
+        const i = Math.floor(Math.random() * A.length), j = Math.floor(Math.random() * B.length);
+        if (A[i] == B[j] || A.includes(B[j]) || B.includes(A[i])) continue;
+        const desc = `đổi ${itemName(A[i])} (${p.hi.h.name}) ↔ ${itemName(B[j])} (${q.hi.h.name})`;
+        [A[i], B[j]] = [B[j], A[i]];
+        return [cfg, desc];
+      }
+      const p = rnd(P), A = cfg[p.hi.h.id];
+      const i = Math.floor(Math.random() * A.length);
+      const cands = p.order.slice(0, 15).map(x => x.it.id).filter(id => !A.includes(id) && (used[id] || 0) < (caps[id] || 0));
+      if (!cands.length) continue;
+      const b = rnd(cands);
+      const desc = `${p.hi.h.name}: ${itemName(A[i])} → ${itemName(b)}`;
+      A[i] = b;
+      return [cfg, desc];
+    }
+    return [null, ''];
+  };
+
+  // Điểm 1 lần thử = trung bình điểm trận: sát thương quy ra % máu địch (thua), thắng = 1 + thưởng thắng nhanh.
+  async function mwLab(times = 10) {
+    stopFlag = false;
+    const hc = HeroCtrl.gInst();
+    // Tướng ngoài đội hình đang giữ pháp bảo thì tháo ra để trả chỗ (lưu bản khôi phục trước).
+    const teamIds = new Set((hc.szHeroList || []).map(x => x.id));
+    const others = mwHeroes().all.filter(h => !teamIds.has(h.id) && (h.magic_weapon_list || []).length);
+    const backup = {};
+    mwHeroes().all.forEach(h => {
+      const list = (h.magic_weapon_list || []).map(w => ({ item_id: w.base_id, pos: w.pos }));
+      if (list.length) backup[h.id] = list;
+    });
+    try { localStorage.setItem('__tnMwBackup', JSON.stringify(backup)); } catch {}
+    for (const h of others) {
+      NetMgr.gInst().sendMsg(32006, { hero_id: h.id, list: h.magic_weapon_list.map(w => ({ item_id: w.base_id, pos: w.pos })) });
+      await waitRecv(32006);
+      await sleep(200);
+    }
+    if (others.length) log(`Tháo PB của ${others.length} tướng ngoài đội hình`);
+
+    const plan = await mwPlan();
+    const caps = {};
+    mwItems().forEach(it => (caps[it.id] = it.cap));
+    const planCfg = {};
+    plan.forEach(p => (planCfg[p.hi.h.id] = p.pick.map(x => x.it.id)));
+    const lab = labLoad();
+    const tested = new Set(lab.results.map(r => cfgKey(r.cfg)));
+    const queue = [[curConfig(), 'đồ hiện tại'], [planCfg, 'phương án của tool']];
+    log(`Thử nghiệm: đã có ${lab.results.length} lần thử trước đó. Bấm "Dừng" để ngừng, "Xem tiến trình" để xem log.`);
+
+    for (let iter = 1; !stopFlag; iter++) {
+      let cfg, desc;
+      while (queue.length && !cfg) {
+        const [c, d] = queue.shift();
+        if (!tested.has(cfgKey(c))) [cfg, desc] = [c, d];
+      }
+      for (let k = 0; !cfg && k < 30; k++) {
+        const best = lab.results.reduce((a, r) => (!a || r.score > a.score ? r : a), null);
+        const [c, d] = mutate(best ? best.cfg : planCfg, plan, caps);
+        if (c && !tested.has(cfgKey(c))) [cfg, desc] = [c, d];
+      }
+      if (!cfg) return log('Thử nghiệm: không tạo được bộ đồ mới để thử');
+      log(`== Lần ${lab.results.length + 1}: ${desc} ==`);
+      await applyConfig(cfg);
+      const res = await benchTower(times);
+      if (res.length < times) { log('Thử nghiệm: chưa đủ trận, không lưu lần này'); break; }
+      const s = benchSummary('Kết quả', res);
+      const dmg = res.reduce((a, x) => a + x.heroes.reduce((b, h) => b + h.dmg, 0), 0) / res.length;
+      lab.results.push({ cfg: curConfig(), desc, score: s.score, dmg, wins: res.filter(x => x.win).length, n: res.length, t: Date.now() });
+      tested.add(cfgKey(cfg));
+      tested.add(cfgKey(curConfig()));
+      labSave(lab);
+      const best = Math.max(...lab.results.map(r => r.score));
+      log(`${s.text}\n  => điểm ${s.score.toFixed(3)}${s.score >= best ? ' (TỐT NHẤT)' : `, tốt nhất ${best.toFixed(3)}`}`);
+    }
+    log('Thử nghiệm: đã dừng. Bấm "Áp dụng tốt nhất" để đeo bộ có điểm cao nhất.');
+  }
+
+  const cfgText = cfg => {
+    const hc = HeroCtrl.gInst();
+    return Object.keys(cfg).map(id => `    ${(hc.getHeroDataByHeroId(Number(id)) || {}).name || id}: ${cfg[id].map(itemName).join(', ')}`).join('\n');
+  };
+
+  async function mwApplyBest() {
+    const lab = labLoad();
+    if (!lab.results.length) return log('Chưa có lần thử nào (với đội hình + pháp bảo hiện tại)');
+    const top = lab.results.slice().sort((a, b) => b.score - a.score);
+    log(`TOP ${Math.min(5, top.length)}/${top.length} lần thử:`);
+    top.slice(0, 5).forEach((r, i) => log(`  ${i + 1}. điểm ${r.score.toFixed(3)}, ST TB ${fmtNum(r.dmg)}, thắng ${r.wins}/${r.n} — ${r.desc}`));
+    log('Đeo bộ tốt nhất:\n' + cfgText(top[0].cfg));
+    await applyConfig(top[0].cfg);
+    log('Xong');
+  }
+
+  async function mwRestore() {
+    let backup;
+    try { backup = JSON.parse(localStorage.getItem('__tnMwBackup')); } catch {}
+    if (!backup) return log('Khôi phục PB: không có bản lưu');
+    await mwUnequipAll();
+    const hc = HeroCtrl.gInst();
+    for (const id of Object.keys(backup)) {
+      const h = hc.getHeroDataByHeroId(Number(id));
+      if (!h) continue;
+      const fails = [];
+      for (const w of backup[id]) {
+        const err = await mwEquip(h, w.item_id, w.pos);
+        if (err) fails.push(`${w.item_id}: ${err}`);
+      }
+      log(`Khôi phục ${h.name}: ${backup[id].length - fails.length}/${backup[id].length} món${fails.length ? ' — lỗi ' + fails.join('; ') : ''}`);
+    }
+  }
+
   // ---- Debug ----
   async function runCode(code) {
     const safe = (v, depth = 0, seen = new WeakSet()) => {
@@ -834,23 +1519,29 @@
     const entries = recLog || [];
     recLog = null;
     // Mảng dài chỉ giữ 2 phần tử đầu để log gọn, đủ thấy cấu trúc.
-    const safe = (v, depth = 0) => {
+    // seen: gói tin không sao chép được (vòng tham chiếu) là object sống của game, duyệt không chặn sẽ treo.
+    const safe = (v, depth = 0, seen = new WeakSet()) => {
       if (v === null || typeof v !== 'object') return typeof v === 'function' ? '[fn]' : v;
+      if (seen.has(v)) return '[circular]';
       if (depth > 5) return '[...]';
+      seen.add(v);
       if (Array.isArray(v)) {
-        const a = v.slice(0, 2).map(x => safe(x, depth + 1));
+        const a = v.slice(0, 2).map(x => safe(x, depth + 1, seen));
         if (v.length > 2) a.push(`+${v.length - 2}`);
         return a;
       }
       const o = {};
-      for (const k of Object.keys(v).slice(0, 40)) o[k] = safe(v[k], depth + 1);
+      for (const k of Object.keys(v).slice(0, 40)) {
+        try { o[k] = safe(v[k], depth + 1, seen); } catch { o[k] = '[lỗi]'; }
+      }
       return o;
     };
     const cut = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
     const t0 = entries.length ? entries[0].t : 0;
     return entries.map(e => {
       const t = `+${((e.t - t0) / 1000).toFixed(1)}s`;
-      const data = cut(JSON.stringify(safe(e.data)), e.dir === 'SEND' ? 800 : 400);
+      let data;
+      try { data = cut(JSON.stringify(safe(e.data)) || '', e.dir === 'SEND' ? 800 : 400); } catch (err) { data = `[không đọc được: ${err && err.message}]`; }
       const from = e.from ? ` <- ${e.from.slice(1, 3).join(' < ')}` : '';
       return `${t} ${e.dir} ${e.cmd}${from} ${data}`;
     }).join('\n') || '(log rỗng)';
@@ -876,6 +1567,7 @@
       ['Treo Thưởng', travel],
       ['PB Ngày', dailyDungeon],
       ['Thông Thiên Tháp', tower],
+      ['Tác chiến nhanh', quickFight],
       ['Kiếm Hành', dice],
       ['Vực U Minh', abyss],
       ['Đoạt Bách Tông', gldSnatch],
@@ -912,12 +1604,18 @@
     travel: action(travel),
     dailyDungeon: action(dailyDungeon),
     tower: action(tower),
+    quickFight: action(quickFight),
     dice: action(dice),
     gldSnatch: action(gldSnatch),
     abyss: action(abyss),
     towerClimb: action(towerClimb),
     dungeonFight: action(dungeonFight),
     listDungeonTypes,
+    mwPreview,
+    mwOptimize: action(mwOptimize),
+    mwRestore: action(mwRestore),
+    mwLab: action(mwLab),
+    mwApplyBest: action(mwApplyBest),
     spiritHarvest: action(spiritHarvest),
     kfLol: action(kfLol),
     extremeYin: action(extremeYin),

@@ -37,7 +37,15 @@ async function callTN(name, args = []) {
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       world: 'MAIN',
-      func: async (name, args) => (window.TN ? { ok: await window.TN[name](...args) } : null),
+      // Bắt lỗi ngay trong frame: lỗi ném ra ngoài làm result rỗng, popup sẽ tưởng là không có game.
+      func: async (name, args) => {
+        if (!window.TN) return null;
+        try {
+          return { ok: await window.TN[name](...args) };
+        } catch (e) {
+          return { ok: `LỖI ${name}: ${(e && e.stack) || e}` };
+        }
+      },
       args: [name, args],
     });
     const hit = results.find(r => r.result);
@@ -79,6 +87,7 @@ bind('btnDungeon', () => callTN('guildDungeon'));
 bind('btnTravel', () => callTN('travel'));
 bind('btnDaily', () => callTN('dailyDungeon'));
 bind('btnTower', () => callTN('tower'));
+bind('btnQuick', () => callTN('quickFight'));
 bind('btnDice', () => callTN('dice'));
 bind('btnSnatch', () => callTN('gldSnatch'));
 bind('btnAbyss', () => callTN('abyss'));
@@ -90,6 +99,12 @@ bind('btnPb', () => callTN('dungeonFight', [
 bind('btnSpirit', () => callTN('spiritHarvest'));
 bind('btnKfLol', () => callTN('kfLol'));
 bind('btnYin', () => callTN('extremeYin'));
+bind('btnMwPreview', () => callTN('mwPreview'));
+bind('btnMwOpt', () => callTN('mwOptimize'));
+bind('btnMwRestore', () => callTN('mwRestore'));
+const benchTimes = () => Number(document.getElementById('benchTimes').value) || 10;
+bind('btnMwLab', () => callTN('mwLab', [benchTimes()]));
+bind('btnMwBest', () => callTN('mwApplyBest'));
 bind('btnStop', () => callTN('stop'));
 bind('btnPeek', () => callTN('peek'));
 bind('btnRecStart', () => callTN('startRecord'));
