@@ -623,7 +623,10 @@
   // Lệnh: 11060 {sign} thông tin, 11065 {list:[{id}]} chọn tướng vào, 11075 {hero_id} đổi tướng ra trận,
   // 11077 {grid_id} xem địch, 11066 {hero_id, grid_id, is_skip} đánh, 11079 {grid_id} Cấm Tuyệt Mệnh,
   // 11063 {grid_id} nhận/mở ô, 11072/11073 hội thoại, 11074 oẳn tù tì, 11091 {grid_id} sự kiện EVT25.
-  async function ancientLand() {
+  // floors: số tầng vượt qua trong lần chạy này, đủ thì dừng dù tướng còn sống.
+  async function ancientLand(floors = 6) {
+    const MAX_FLOORS = Math.max(1, Number(floors) || 6);
+    let cleared = 0;
     const net = NetMgr.gInst();
     const C = AdvConst;
     const model = AdvCtrl.gInst().getCurlModel();
@@ -767,9 +770,52 @@
       skipped.clear();
       bossWon = null;
       for (const k in losses) delete losses[k];
-      log(`Cổ Thần Địa: sang tầng ${info.cur_layer}`);
+      cleared++;
+      log(`Cổ Thần Địa: sang tầng ${info.cur_layer} (đã qua ${cleared}/${MAX_FLOORS} tầng)`);
+      if (cleared >= MAX_FLOORS) return log(`Cổ Thần Địa: đã qua đủ ${MAX_FLOORS} tầng, dừng`);
       await sleep(500);
     }
+  }
+
+  // Ảo cảnh trận pháp: lật 2 thẻ giống nhau. 32061 {action:0} bắt đầu, server đẩy 32060 có cards_list kèm
+  // base_id (2 thẻ cùng base_id là 1 cặp); 32062 {list:[{uid},{uid}]} lật 1 cặp; xong hết server gửi 32063.
+  // Lật rải đều để cả ván mất khoảng TOTAL_MS (làm quá nhanh dễ bị nghi).
+  async function mirageMatch(seconds = 15) {
+    const TOTAL_MS = Math.max(1, Number(seconds) || 15) * 1000;
+    const net = NetMgr.gInst();
+    stopFlag = false;
+    net.sendMsg(32060, {});
+    let info = await waitRecv(32060);
+    if (!info) return log('Ảo cảnh: không lấy được thông tin');
+    if (!longVal(info.begin_ms)) {
+      const started = waitRecv(32060);
+      net.sendMsg(32061, { action: 0 });
+      info = await started;
+      if (!info || !longVal(info.begin_ms)) return log(`Ảo cảnh: không bắt đầu được ván ${errText(info)}`);
+      log('Ảo cảnh: bắt đầu ván');
+    }
+    const groups = {};
+    for (const c of info.cards_list || []) if (c.status == 0) (groups[c.base_id] = groups[c.base_id] || []).push(c.uid);
+    const pairs = [];
+    for (const uids of Object.values(groups)) for (let i = 0; i + 1 < uids.length; i += 2) pairs.push([uids[i], uids[i + 1]]);
+    if (!pairs.length) return log('Ảo cảnh: không còn cặp nào để lật');
+    // Trộn thứ tự cặp cho giống người chơi.
+    for (let i = pairs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pairs[i], pairs[j]] = [pairs[j], pairs[i]];
+    }
+    const gap = TOTAL_MS / pairs.length;
+    const done = waitRecv(32063, TOTAL_MS + 15000);
+    for (let n = 0; n < pairs.length; n++) {
+      if (stopFlag) return log(`Ảo cảnh: đã dừng sau ${n} cặp`);
+      await sleep(gap * (0.7 + Math.random() * 0.6));
+      const [a, b] = pairs[n];
+      net.sendMsg(32062, { list: [{ uid: a }, { uid: b }] });
+      const r = await waitRecv(32062);
+      if (!r || r.res != 1) return log(`Ảo cảnh: lật cặp ${a}-${b} lỗi ${errText(r)}`);
+    }
+    const end = await done;
+    log(end ? `Ảo cảnh: xong ${pairs.length} cặp trong ${(end.pass_ms / 1000).toFixed(1)}s, điểm ${end.scores}` : `Ảo cảnh: đã lật ${pairs.length} cặp, chưa thấy kết quả`);
   }
 
   // NV 16: Kiếm Hành (DiceCtrl) — đổ xúc xắc tới khi chặng đạt 100%. Như clickDice của game: dùng lượt
@@ -1809,9 +1855,26 @@
     }).join('\n') || '(log rỗng)';
   }
 
-  // Bọc các hành động: chạy rồi trả về log dạng text cho popup.
+  // Về Đạo Thành như game (showCityView, gửi 11203). Ctrl chứa hàm này tìm qua prototype lần đầu rồi nhớ lại.
+  let cityCtrl;
+  const goCity = async () => {
+    try {
+      if (cityCtrl === undefined) {
+        const k = Object.keys(window).find(k => {
+          try { return /Ctrl$/.test(k) && window[k] && window[k].prototype && typeof window[k].prototype.showCityView == 'function'; } catch { return false; }
+        });
+        cityCtrl = k || null;
+      }
+      if (!cityCtrl) return;
+      await waitNotFighting();
+      window[cityCtrl].gInst().showCityView();
+    } catch (e) { console.warn('[TN] không về được Đạo Thành', e); }
+  };
+
+  // Bọc các hành động: chạy rồi về Đạo Thành, trả log dạng text cho popup.
   const action = fn => async (...a) => {
     try { await fn(...a); } catch (e) { log('LỖI: ' + (e && e.stack || e)); }
+    await goCity();
     return takeLog();
   };
 
@@ -1846,6 +1909,7 @@
         log(`LỖI ${name}: ${(e && e.message) || e}`);
       }
       await waitNotFighting();
+      await goCity();
       await sleep(500);
     }
     log('== Xong tất cả ==');
@@ -1887,6 +1951,7 @@
     spiritHarvest: action(spiritHarvest),
     ruinsGather: action(ruinsGather),
     ancientLand: action(ancientLand),
+    mirageMatch: action(mirageMatch),
     kfLol: action(kfLol),
     extremeYin: action(extremeYin),
     stop: () => {

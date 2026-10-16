@@ -100,7 +100,8 @@ bind('btnPb',() => callTN('dungeonFight', [
 ]));
 bind('btnSpirit', () => callTN('spiritHarvest'));
 bind('btnRuins', () => callTN('ruinsGather'));
-bind('btnAncient', () => callTN('ancientLand'));
+bind('btnAncient', () => callTN('ancientLand', [Number(document.getElementById('ancientFloors').value) || 6]));
+bind('btnMirage', () => callTN('mirageMatch', [Number(document.getElementById('mirageSec').value) || 15]));
 bind('btnKfLol', () => callTN('kfLol'));
 bind('btnYin', () => callTN('extremeYin'));
 bind('btnMwPreview', () => callTN('mwPreview'));
