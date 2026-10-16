@@ -617,6 +617,161 @@
     else log(`Điểm danh: ${res(await ask(30102))}`);
   }
 
+  // Cổ Thần Địa (AdvCtrl): đánh liên tục từng tầng tới khi kẹt (hết tướng, hết việc làm được) hoặc TN.stop().
+  // Mỗi tầng 25 ô: 4 tướng thường mở ra boss (ô 13); thắng boss thì 11063 ô boss để sang tầng. Ô đã mở thì
+  // tương tác hết như AdvCtrl.eventHandler của game, trừ Tiệm Cổ Thần (EVT24, 11067 mở / 11068 mua) không mua gì.
+  // Lệnh: 11060 {sign} thông tin, 11065 {list:[{id}]} chọn tướng vào, 11075 {hero_id} đổi tướng ra trận,
+  // 11077 {grid_id} xem địch, 11066 {hero_id, grid_id, is_skip} đánh, 11079 {grid_id} Cấm Tuyệt Mệnh,
+  // 11063 {grid_id} nhận/mở ô, 11072/11073 hội thoại, 11074 oẳn tù tì, 11091 {grid_id} sự kiện EVT25.
+  async function ancientLand() {
+    const net = NetMgr.gInst();
+    const C = AdvConst;
+    const model = AdvCtrl.gInst().getCurlModel();
+    const ask = async (cmd, data = {}, recv = cmd) => {
+      net.sendMsg(cmd, data);
+      return waitRecv(recv, 10000);
+    };
+    const ok = r => r && r.res != 0;
+    const MAX_LOSS = 5; // thua cùng 1 tướng địch 5 lần thì dùng Cấm Tuyệt Mệnh
+    const MORRA = { bet: 2, guess: 2 };
+    const BOSS_GRID = 13; // game đánh dấu ô 13 là ô boss (isBsGrid)
+    const BOX_KEY = 1001080; // chìa mở rương (boxOpen của game kiểm tra vật phẩm này)
+    const FIGHT = new Set([C.EVT1_SGC, C.EVT2_SGC, C.EVT3_SGC, C.EVT4_SGC, C.EVT100_SGC]);
+    const evtName = eid => {
+      try {
+        const c = model.getEvtCfg(eid) || model.getEvtCfgVo(eid) || {};
+        return String(c.name || c.desc || c.title || '').replace(/<[^>]+>/g, '');
+      } catch { return ''; }
+    };
+    const label = g => `ô ${g.id} ${evtName(g.eid) || ''} (etype ${g.etype})`.replace(/\s+/g, ' ');
+    const losses = {};
+    const skipped = new Set();
+    let bossWon = null; // thắng boss xong game chờ bấm OK (11063 ô boss), ô có thể chưa is_fin
+    stopFlag = false;
+
+    // sign 1 làm game mở giao diện chính, các lần sau dùng 2 (chỉ cập nhật).
+    const refresh = () => ask(11060, { sign: 2 });
+    let info = await ask(11060, { sign: 1 });
+    if (!info) return log('Cổ Thần Địa: không lấy được thông tin');
+    if (!(info.hero_list || []).length) {
+      // Như nút tự động chọn: 6 tướng lực chiến cao nhất.
+      const heroes = [...(HeroCtrl.gInst().getHeroDataByRealm(0) || [])].sort((a, b) => longVal(b.fc) - longVal(a.fc)).slice(0, 6);
+      const r = await ask(11065, { list: heroes.map(h => ({ id: h.id })) });
+      if (!ok(r)) return log(`Cổ Thần Địa: chọn tướng lỗi ${errText(r)} - hãy chọn tướng tay trong game rồi chạy lại`);
+      log(`Cổ Thần Địa: chọn tướng ${heroes.map(h => h.name).join(', ')}`);
+      info = await refresh();
+      if (!info) return log('Cổ Thần Địa: không lấy được thông tin');
+    }
+    log(`Cổ Thần Địa: tầng ${info.cur_layer}, đã giết ${info.kill_num}`);
+
+    // Tương tác 1 ô không phải tướng địch. Trả về true nếu đã gửi lệnh.
+    async function interact(g) {
+      let r;
+      if (g.auto_open) {
+        r = await ask(11063, { grid_id: g.id });
+      } else if (g.etype == C.EVT14_SGC || g.etype == C.EVT15_SGC) {
+        const t = await ask(11072, { grid_id: g.id });
+        const opt = ((t && t.list) || [])[0];
+        if (!opt) { skipped.add(g.id); log(`Cổ Thần Địa: ${label(g)}: không đọc được hội thoại ${JSON.stringify(t)}`); return true; }
+        r = await ask(11073, { grid_id: g.id, index: opt.index });
+      } else if (g.etype == C.EVT17_SGC) {
+        if (!(PropsCtrl.gInst().findGoodsNum(BOX_KEY) > 0)) { skipped.add(g.id); log(`Cổ Thần Địa: ${label(g)}: hết chìa mở rương`); return false; }
+        r = await ask(11063, { grid_id: g.id });
+      } else if (g.etype == C.EVT22_SGC) {
+        r = await ask(11074, { grid_id: g.id, ...MORRA });
+      } else if (g.etype == C.EVT23_SGC) {
+        r = await ask(11063, { grid_id: g.id });
+      } else if (g.etype == C.EVT25_SGC) {
+        // Cổ Thần Ban Phước: 11091 mở bảng quay (lottery_list), 11092 = nút "Bắt đầu" (trả gain_pos).
+        const open = await ask(11091, { grid_id: g.id });
+        if (!ok(open)) { skipped.add(g.id); log(`Cổ Thần Địa: ${label(g)} mở Ban Phước lỗi ${errText(open)}`); return true; }
+        r = await ask(11092, { grid_id: g.id });
+        const won = ok(r) && (open.lottery_list || []).find(x => x.pos == r.gain_pos);
+        if (won) log(`Cổ Thần Địa: Ban Phước quay trúng vật phẩm ${won.item_bid} x${won.num}`);
+        try { AdvCtrl.gInst().closeLtryUi(); } catch {}
+      } else if (g.etype == C.EVT24_SGC) {
+        skipped.add(g.id);
+        log(`Cổ Thần Địa: bỏ qua ${label(g)} (Tiệm Cổ Thần, không mua)`);
+        return false;
+      } else {
+        // EVT9/EVT10 (openEnterUi) và loại lạ: chưa biết lệnh, để lại.
+        skipped.add(g.id);
+        log(`Cổ Thần Địa: chưa biết cách tương tác ${label(g)}, bỏ qua`);
+        return false;
+      }
+      skipped.add(g.id); // dù lỗi cũng không thử lại trong tầng này
+      log(`Cổ Thần Địa: ${label(g)} - ${ok(r) ? 'OK' : 'lỗi ' + errText(r)}`);
+      await sleep(300);
+      return true;
+    }
+
+    for (let step = 0; step < 500; step++) {
+      if (stopFlag) return log('Cổ Thần Địa: đã dừng');
+      const grids = (info.grid_list || []).filter(g => g.is_open && !g.is_fin && !skipped.has(g.id) && g.etype != C.NULL_SGC);
+      const enemies = grids.filter(g => FIGHT.has(g.etype) && g.id != bossWon);
+      const items = grids.filter(g => !FIGHT.has(g.etype) && g.etype != C.NEXT_SGC);
+
+      // 1. Tương tác ô vật phẩm/sự kiện.
+      let acted = false;
+      for (const g of items) if (await interact(g)) acted = true;
+      if (acted) { info = await refresh(); if (!info) return log('Cổ Thần Địa: mất thông tin'); continue; }
+
+      // 2. Đánh tướng địch (4 tướng thường trước, boss ô 13 sau cùng).
+      const g = enemies.sort((a, b) => (a.id == BOSS_GRID) - (b.id == BOSS_GRID))[0];
+      if (g) {
+        const isBoss = g.id == BOSS_GRID || g.etype == C.EVT100_SGC;
+        if ((losses[g.id] || 0) >= MAX_LOSS) {
+          if (!(info.left_soul_potion > 0 && info.soul_potion > 0)) { skipped.add(g.id); log(`Cổ Thần Địa: ô ${g.id} thua ${MAX_LOSS} lần, hết Cấm Tuyệt Mệnh`); continue; }
+          const r = await ask(11079, { grid_id: g.id });
+          if (!ok(r)) { skipped.add(g.id); log(`Cổ Thần Địa: Cấm Tuyệt Mệnh ô ${g.id} lỗi ${errText(r)}`); continue; }
+          if (isBoss) bossWon = g.id;
+          log(`Cổ Thần Địa: dùng Cấm Tuyệt Mệnh giết ô ${g.id}`);
+        } else {
+          const alive = (info.hero_list || []).filter(h => h.hp > 0);
+          if (!alive.length) return log('Cổ Thần Địa: hết tướng còn sống, dừng');
+          let hero = alive.find(h => h.id == info.select_hero_id);
+          if (!hero) {
+            hero = alive.reduce((a, b) => (longVal(b.fc) > longVal(a.fc) ? b : a));
+            const r = await ask(11075, { hero_id: hero.id });
+            if (!ok(r)) return log(`Cổ Thần Địa: đổi tướng ${hero.name} lỗi ${errText(r)}`);
+          }
+          const e = await ask(11077, { grid_id: g.id });
+          const foe = ((e && e.hero_list) || [])[0] || {};
+          await waitNotFighting();
+          const fight = waitRecv(14002, 10000);
+          const r = await ask(11066, { hero_id: hero.id, grid_id: g.id, is_skip: info.is_skip || 0 });
+          if (!ok(r)) { skipped.add(g.id); log(`Cổ Thần Địa: đánh ô ${g.id} lỗi ${errText(r)}`); continue; }
+          const f = await fight;
+          const won = f && f.result == 1;
+          if (!won) losses[g.id] = (losses[g.id] || 0) + 1;
+          else if (isBoss) bossWon = g.id;
+          log(`Cổ Thần Địa: ${hero.name} đánh ${foe.name || 'ô ' + g.id}${isBoss ? ' (boss)' : ''} - ${won ? 'thắng' : `thua (${losses[g.id]}/${MAX_LOSS})`}`);
+          await sleep(800);
+          await waitNotFighting();
+        }
+        info = await refresh();
+        if (!info) return log('Cổ Thần Địa: mất thông tin');
+        continue;
+      }
+
+      // 3. Hết việc trong tầng: sang tầng qua ô NEXT hoặc ô boss đã hạ.
+      const next = (info.grid_list || []).find(x => x.is_open && !x.is_fin && x.etype == C.NEXT_SGC) || (bossWon && { id: bossWon });
+      if (!next) {
+        const rest = (info.grid_list || []).filter(x => x.is_open && !x.is_fin).map(label);
+        return log(`Cổ Thần Địa: không còn việc làm được ở tầng ${info.cur_layer}${rest.length ? ` (còn: ${rest.join(', ')})` : ''}`);
+      }
+      const layer = info.cur_layer;
+      const r = await ask(11063, { grid_id: next.id }, 11060);
+      if (!r || r.cur_layer == layer) return log(`Cổ Thần Địa: không sang được tầng mới (ô ${next.id})`);
+      info = r;
+      skipped.clear();
+      bossWon = null;
+      for (const k in losses) delete losses[k];
+      log(`Cổ Thần Địa: sang tầng ${info.cur_layer}`);
+      await sleep(500);
+    }
+  }
+
   // NV 16: Kiếm Hành (DiceCtrl) — đổ xúc xắc tới khi chặng đạt 100%. Như clickDice của game: dùng lượt
   // miễn phí, hết thì dùng xúc xắc nếu đủ; thiếu xúc xắc thì dừng (game sẽ mở bảng mua bằng Tiên Ngọc).
   async function dice() {
@@ -1731,6 +1886,7 @@
     mwApplyBest: action(mwApplyBest),
     spiritHarvest: action(spiritHarvest),
     ruinsGather: action(ruinsGather),
+    ancientLand: action(ancientLand),
     kfLol: action(kfLol),
     extremeYin: action(extremeYin),
     stop: () => {

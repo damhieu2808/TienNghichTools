@@ -100,6 +100,7 @@ bind('btnPb',() => callTN('dungeonFight', [
 ]));
 bind('btnSpirit', () => callTN('spiritHarvest'));
 bind('btnRuins', () => callTN('ruinsGather'));
+bind('btnAncient', () => callTN('ancientLand'));
 bind('btnKfLol', () => callTN('kfLol'));
 bind('btnYin', () => callTN('extremeYin'));
 bind('btnMwPreview', () => callTN('mwPreview'));
