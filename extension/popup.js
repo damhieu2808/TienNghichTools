@@ -27,10 +27,41 @@ async function ensureTN(tabId) {
   });
 }
 
+// Trạng thái trực tiếp trong game (log đang chạy, job). Không nạp tn.js: chưa có TN thì trả null.
+async function readState(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    world: 'MAIN',
+    func: () => (window.TN && window.TN.liveState ? window.TN.liveState() : null),
+  });
+  const hit = results.find(r => r.result);
+  return hit ? hit.result : null;
+}
+
+// Hỏi định kỳ: dòng job luôn cập nhật; khi game đang chạy việc thì hiện log trực tiếp, trừ vài giây ngay
+// sau khi một nút trả kết quả (holdUntil) để kịp đọc kết quả đó.
+const jobLine = document.getElementById('jobLine');
+let holdUntil = 0;
+async function poll() {
+  try {
+    const st = await readState(await getTabId());
+    if (!st) return;
+    jobLine.textContent = st.job;
+    if (st.busy && Date.now() > holdUntil) {
+      out.value = st.log || '(chưa có log)';
+      out.scrollTop = out.scrollHeight;
+      setStatus('Đang chạy...', 'run');
+    }
+  } catch {}
+}
+setInterval(poll, 1500);
+poll();
+
 // Gọi window.TN[name](...args) trong frame có game.
 async function callTN(name, args = []) {
   setStatus('Đang chạy...', 'run');
   out.value = '';
+  holdUntil = 0;
   try {
     const tabId = await getTabId();
     await ensureTN(tabId);
@@ -48,6 +79,7 @@ async function callTN(name, args = []) {
       },
       args: [name, args],
     });
+    holdUntil = Date.now() + 5000;
     const hit = results.find(r => r.result);
     if (!hit) {
       setStatus('Không tìm thấy game trong tab này (đã vào game chưa?)', 'err');
@@ -57,6 +89,7 @@ async function callTN(name, args = []) {
     out.value = typeof res === 'string' ? res : JSON.stringify(res, null, 2);
     setStatus('Xong', 'ok');
   } catch (e) {
+    holdUntil = Date.now() + 5000;
     setStatus('Lỗi', 'err');
     out.value = String(e && e.message || e);
   }
@@ -110,7 +143,11 @@ bind('btnMwRestore', () => callTN('mwRestore'));
 const benchTimes = () => Number(document.getElementById('benchTimes').value) || 10;
 bind('btnMwLab', () => callTN('mwLab', [benchTimes()]));
 bind('btnMwBest', () => callTN('mwApplyBest'));
-bind('btnStop', () => callTN('stop'));
+bind('btnJobOn', () => callTN('jobStart', [Number(document.getElementById('jobMin').value) || 30]));
+bind('btnJobOff', () => callTN('jobStop'));
+bind('btnJobStatus', () => callTN('jobStatus'));
+bind('btnJobNow', () => callTN('jobRunNow'));
+bind('btnStop',() => callTN('stop'));
 bind('btnPeek', () => callTN('peek'));
 bind('btnRecStart', () => callTN('startRecord'));
 bind('btnRecStop', () => callTN('stopRecord'));

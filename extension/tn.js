@@ -211,6 +211,7 @@
     const need = times;
     for (let n = 1; n <= need; n++) {
       if (stopFlag) return log(`Đấu Tiên Đài: đã dừng sau ${n - 1} trận`);
+      await jobGate();
       ctrl.send14201();
       const info = await waitRecv(14201);
       const enemies = (info && info.enemy_list) || [];
@@ -710,6 +711,7 @@
 
     for (let step = 0; step < 500; step++) {
       if (stopFlag) return log('Cổ Thần Địa: đã dừng');
+      await jobGate();
       const grids = (info.grid_list || []).filter(g => g.is_open && !g.is_fin && !skipped.has(g.id) && g.etype != C.NULL_SGC);
       const enemies = grids.filter(g => FIGHT.has(g.etype) && g.id != bossWon);
       const items = grids.filter(g => !FIGHT.has(g.etype) && g.etype != C.NEXT_SGC);
@@ -819,12 +821,17 @@
   }
 
   // NV 16: Kiếm Hành (DiceCtrl) — đổ xúc xắc tới khi chặng đạt 100%. Như clickDice của game: dùng lượt
-  // miễn phí, hết thì dùng xúc xắc nếu đủ; thiếu xúc xắc thì dừng (game sẽ mở bảng mua bằng Tiên Ngọc).
+  // miễn phí, hết thì dùng xúc xắc; thiếu xúc xắc thì mua như bảng mua của game (buyDice: ShopCtrl.quickBuy
+  // món 1501001, giá mỗi viên = config dice_price Tiên Ngọc), tổng tiền mua mỗi lần chạy <= MAX_BUY_GOLD.
   async function dice() {
+    const MAX_BUY_GOLD = 1000;
+    const DICE_SHOP_ID = 1501001;
+    let spent = 0;
     const ctrl = DiceCtrl.gInst();
     ctrl.sd20501();
     if (!(await waitRecv(20501))) return log('Kiếm Hành: không lấy được thông tin');
     for (let n = 1; n <= 60; n++) {
+      await jobGate();
       const dt = ctrl.infoDt;
       if (!dt) return log('Kiếm Hành: không có dữ liệu');
       if (dt.percent >= 100) return log(`Kiếm Hành: chặng đã đạt 100% (đổ ${n - 1} lần)`);
@@ -832,17 +839,34 @@
       if (dt.freeTimes > 0) {
         how = `miễn phí (còn ${dt.freeTimes - 1})`;
       } else {
-        const have = PropsCtrl.gInst().findGoodsNum(ctrl.getInfoByKey('dice_id'));
+        const diceId = ctrl.getInfoByKey('dice_id');
+        let have = PropsCtrl.gInst().findGoodsNum(diceId);
         const cost = ctrl.getCostCfg(dt.buyTimes + 1);
         const needNum = cost ? cost.quantity : 0;
-        if (!cost || have < needNum) return log(`Kiếm Hành: hết lượt miễn phí và hết xúc xắc (có ${have}, cần ${needNum}), dừng ở ${dt.percent}% sau ${n - 1} lần đổ`);
+        if (!cost) return log(`Kiếm Hành: không đọc được giá đổ, dừng ở ${dt.percent}%`);
+        if (have < needNum) {
+          const buyNum = needNum - have;
+          const price = Number(ctrl.getInfoByKey('dice_price')) || 0;
+          const gold = buyNum * price;
+          if (!price) return log(`Kiếm Hành: hết xúc xắc, không đọc được giá mua, dừng ở ${dt.percent}%`);
+          if (spent + gold > MAX_BUY_GOLD) return log(`Kiếm Hành: đã mua ${spent} Tiên Ngọc, mua thêm ${gold} sẽ vượt giới hạn ${MAX_BUY_GOLD}, dừng ở ${dt.percent}%`);
+          ShopCtrl.gInst().quickBuy(DICE_SHOP_ID, buyNum);
+          // Không biết lệnh trả về của cửa hàng: chờ số xúc xắc trong túi tăng.
+          for (let w = 0; w < 25 && have < needNum; w++) {
+            await sleep(200);
+            have = PropsCtrl.gInst().findGoodsNum(diceId);
+          }
+          if (have < needNum) return log(`Kiếm Hành: mua ${buyNum} xúc xắc (${gold} Tiên Ngọc) không thành công (thiếu Tiên Ngọc?), dừng ở ${dt.percent}%`);
+          spent += gold;
+          log(`Kiếm Hành: mua ${buyNum} xúc xắc (${gold} Tiên Ngọc, tổng ${spent})`);
+        }
         how = `dùng ${needNum} xúc xắc (còn ${have - needNum})`;
       }
       ctrl.sd20502();
       const r = await waitRecv(20502);
       if (!r || r.res != 1) return log(`Kiếm Hành lần ${n}: lỗi ${errText(r)}`);
       log(`Kiếm Hành lần ${n}: ${how}, được ${r.point} điểm, tiến độ ${r.percent}%`);
-      await sleep(1500);
+      await sleep(3000); // clickDice của game chặn bấm dưới 3 giây
     }
   }
 
@@ -894,6 +918,7 @@
     let win = 0;
     for (let n = 1; n <= times; n++) {
       if (stopFlag) return log(`${label}: đã dừng sau ${n - 1} lần (thắng ${win})`);
+      await jobGate();
       ctrl.send11004(type);
       const info = await waitRecv(11004);
       if (!info) return log(`${label}: không lấy được thông tin`);
@@ -1871,9 +1896,85 @@
     } catch (e) { console.warn('[TN] không về được Đạo Thành', e); }
   };
 
-  // Bọc các hành động: chạy rồi về Đạo Thành, trả log dạng text cho popup.
+  // ---- Job định kỳ ----
+  // Mỗi `minutes` phút chạy JOB_STEPS. Đến giờ chỉ bật jobPending: nếu đang có hành động chạy, hành động đó
+  // gọi jobGate() ở đầu mỗi vòng lặp (leo tháp, Đấu Tiên Đài...) -> chạy job xen giữa rồi đi tiếp đúng lần
+  // đang dở (biến đếm vòng lặp giữ nguyên). Hành động không có jobGate thì job chạy khi hành động xong.
+  // Đang rảnh thì job chạy ngay, log giữ ở jobLast (xem bằng TN.jobStatus()).
+  // Trạng thái để ở window.__tnJob để nạp lại tn.js vẫn giữ lịch (hẹn lại từ đầu chu kỳ).
+  const JOB_STEPS = [
+    ['Cực Âm Địa', () => extremeYin()],
+    ['Di tích 1 - Thu thập', () => ruinsGather()],
+  ];
+  const job = window.__tnJob || (window.__tnJob = { minutes: 0, timer: null, next: 0, last: '' });
+  let busy = 0;
+  let jobPending = false;
+  let jobRunning = false;
+  async function runJob() {
+    if (jobRunning) return;
+    jobRunning = true;
+    jobPending = false;
+    try {
+      await waitNotFighting();
+      log(`== Job ${new Date().toLocaleTimeString()} ==`);
+      for (const [name, fn] of JOB_STEPS) {
+        log(`-- ${name} --`);
+        try { await fn(); } catch (e) { log(`LỖI job ${name}: ${(e && e.message) || e}`); }
+        await waitNotFighting();
+        await sleep(500);
+      }
+      log('== Hết job ==');
+    } finally {
+      jobRunning = false;
+    }
+  }
+  const jobGate = async () => {
+    if (jobPending && !jobRunning) await runJob();
+  };
+  function scheduleJob() {
+    if (job.timer) bg.cancel(job.timer);
+    job.timer = null;
+    if (!job.minutes) return;
+    job.next = Date.now() + job.minutes * 60000;
+    job.timer = bg.later(onJobTimer, job.minutes * 60000);
+  }
+  async function onJobTimer() {
+    job.timer = null;
+    scheduleJob();
+    jobPending = true;
+    if (busy || jobRunning) return; // hành động đang chạy sẽ tự gọi job ở jobGate / khi xong
+    out.length = 0; // lúc rảnh: log job bắt đầu từ đầu để popup hiện trực tiếp
+    await runJob();
+    await goCity();
+    job.last = takeLog();
+  }
+  scheduleJob(); // nạp lại tn.js: hủy hẹn giờ cũ (closure cũ), hẹn lại nếu job đang bật
+  function jobStatus() {
+    if (!job.minutes) return `Job: đang tắt${job.last ? `\n--- Lần chạy gần nhất ---\n${job.last}` : ''}`;
+    const left = Math.max(0, Math.round((job.next - Date.now()) / 60000));
+    return `Job: bật, mỗi ${job.minutes} phút, lần tới lúc ${new Date(job.next).toLocaleTimeString()} (còn ~${left} phút)` +
+      `${jobRunning ? '\nĐang chạy job' : jobPending ? '\nĐang chờ hành động hiện tại tới điểm dừng' : ''}` +
+      `\nViệc: ${JOB_STEPS.map(s => s[0]).join(', ')}${job.last ? `\n--- Lần chạy gần nhất (lúc rảnh) ---\n${job.last}` : ''}`;
+  }
+  function jobStart(minutes = 30) {
+    job.minutes = Math.max(1, Number(minutes) || 30);
+    scheduleJob();
+    return jobStatus();
+  }
+  function jobStop() {
+    job.minutes = 0;
+    jobPending = false;
+    scheduleJob();
+    return jobStatus();
+  }
+
+  // Bọc các hành động: chờ job đang chạy xong, chạy, chạy job nếu tới giờ trong lúc đó, về Đạo Thành,
+  // trả log dạng text cho popup.
   const action = fn => async (...a) => {
-    try { await fn(...a); } catch (e) { log('LỖI: ' + (e && e.stack || e)); }
+    while (jobRunning) await sleep(500);
+    busy++;
+    try { await fn(...a); } catch (e) { log('LỖI: ' + (e && e.stack || e)); } finally { busy--; }
+    if (jobPending) await runJob();
     await goCity();
     return takeLog();
   };
@@ -1902,6 +2003,7 @@
     stopFlag = false;
     for (const [name, fn] of steps) {
       if (stopFlag) return log('== Đã dừng ==');
+      await jobGate();
       log(`== ${name} ==`);
       try {
         await fn();
@@ -1952,6 +2054,19 @@
     ruinsGather: action(ruinsGather),
     ancientLand: action(ancientLand),
     mirageMatch: action(mirageMatch),
+    jobStart,
+    jobStop,
+    jobStatus,
+    // Popup hỏi định kỳ để hiện log trực tiếp khi hành động/job đang chạy.
+    liveState: () => ({
+      busy: busy > 0 || jobRunning,
+      log: out.join('\n'),
+      job: job.minutes
+        ? `Job: bật, mỗi ${job.minutes} phút, lần tới ${new Date(job.next).toLocaleTimeString()}${jobRunning ? ' - ĐANG CHẠY' : jobPending ? ' - chờ tới lượt' : ''}`
+        : 'Job: tắt',
+    }),
+    // Chạy job ngay: bật cờ chờ, action tự chạy job khi kết thúc.
+    jobRunNow: action(() => { jobPending = true; }),
     kfLol: action(kfLol),
     extremeYin: action(extremeYin),
     stop: () => {

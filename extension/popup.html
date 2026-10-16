@@ -53,9 +53,9 @@
   .danger { color: var(--danger); border-color: var(--danger) !important; font-weight: 600; }
 
   .climb { display: flex; align-items: center; gap: 6px; grid-column: span 3; }
-  .climb button { flex: 1; }
-  .climb input { width: 56px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn); color: var(--text); font: inherit; }
-  .climb span { color: var(--muted); }
+  .climb button { flex: 1; min-width: 0; }
+  .climb input { width: 84px; flex-shrink: 0; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn); color: var(--text); font: inherit; }
+  .climb span { color: var(--muted); flex-shrink: 0; white-space: nowrap; }
   .climb select { padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn); color: var(--text); font: inherit; }
 
   .guide { margin: 0 0 8px; padding-left: 18px; color: var(--muted); line-height: 1.5; }
@@ -67,6 +67,7 @@
   #status[data-state=run] { color: var(--warn); }
   #status[data-state=ok] { color: var(--accent); }
   #status[data-state=err] { color: var(--danger); }
+  #jobLine { font-size: 12px; color: var(--muted); min-height: 16px; margin-bottom: 4px; }
   #out { height: 200px; }
 </style>
 </head>
@@ -160,6 +161,19 @@
   </details>
 
   <details class="card">
+    <summary><h2>Job định kỳ</h2></summary>
+    <div class="grid">
+      <div class="climb">
+        <button id="btnJobOn" class="primary">Bật job</button>
+        <input id="jobMin" type="number" value="30" min="1"><span>phút</span>
+      </div>
+      <button id="btnJobOff">Tắt job</button>
+      <button id="btnJobStatus">Trạng thái</button>
+      <button id="btnJobNow">Chạy ngay</button>
+    </div>
+  </details>
+
+  <details class="card">
     <summary><h2>Pháp bảo</h2></summary>
     <div class="grid">
       <button id="btnMwPreview">Xem phương án</button>
@@ -180,6 +194,7 @@
       <button id="btnCopy">Copy</button>
     </div>
     <div id="status"></div>
+    <div id="jobLine"></div>
     <textarea id="out" readonly placeholder="Kết quả hiện ở đây"></textarea>
   </section>
   <script src="popup.js"></script>
