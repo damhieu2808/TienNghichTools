@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "TN Tool",
+  "version": "0.1.0",
+  "description": "Hỗ trợ nhiệm vụ ngày Tiên Nghịch",
+  "permissions": ["scripting", "activeTab"],
+  "host_permissions": [
+    "https://tiennghich.joyplay.vn/*",
+    "https://tiennghich.acejoygame.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "TN Tool"
+  }
+}

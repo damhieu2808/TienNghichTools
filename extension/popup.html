@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 460px; font: 13px system-ui, sans-serif; margin: 10px; }
+  button { padding: 6px 10px; margin: 0 4px 6px 0; cursor: pointer; }
+  textarea { width: 100%; box-sizing: border-box; font: 12px Consolas, monospace; }
+  #code { height: 80px; }
+  #out { height: 300px; background: #f6f6f6; }
+  .row { margin-bottom: 8px; }
+  #status { color: #888; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <button id="btnTasks">Lấy DS nhiệm vụ ngày</button>
+    <button id="btnClaim">Nhận thưởng hết</button>
+  </div>
+  <div class="row">
+    <button id="btnGift">Tặng tình bạn</button>
+    <button id="btnArena">Đấu Tiên Đài</button>
+    <button id="btnFete">Cung phụng</button>
+    <button id="btnHelp">Viện trợ</button>
+    <button id="btnRecruit">Chiêu mộ</button>
+    <button id="btnEndless">Thủ Vệ Tứ Phái</button>
+    <button id="btnDungeon">Bí Cảnh</button>
+    <button id="btnTravel">Treo Thưởng</button>
+    <button id="btnDaily">PB Ngày</button>
+    <button id="btnTower">Thông Thiên Tháp</button>
+    <button id="btnDice">Kiếm Hành</button>
+    <button id="btnSnatch">Đoạt Bách Tông</button>
+  </div>
+  <div class="row">
+    <button id="btnClimb">Leo tháp</button>
+    <input id="climbTimes" type="number" value="20" min="1" style="width:50px"> lần
+    <button id="btnStop">Dừng</button>
+  </div>
+  <div class="row">
+    <button id="btnRecStart">Bắt đầu ghi</button>
+    <button id="btnRecStop">Dừng &amp; xem log</button>
+  </div>
+  <div class="row">
+    <textarea id="code" placeholder="Dán code debug vào đây (biểu thức hoặc thân hàm có return)"></textarea>
+    <button id="btnRun">Chạy code</button>
+  </div>
+  <div class="row">
+    <button id="btnCopy">Copy kết quả</button>
+    <span id="status"></span>
+  </div>
+  <textarea id="out" readonly></textarea>
+  <script src="popup.js"></script>
+</body>
+</html>

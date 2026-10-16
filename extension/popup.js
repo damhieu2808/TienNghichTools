@@ -1,0 +1,79 @@
+// Popup chỉ là giao diện: nạp tn.js vào frame game rồi gọi các hàm trong window.TN.
+
+const out = document.getElementById('out');
+const status = document.getElementById('status');
+
+async function getTabId() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab.id;
+}
+
+// Nạp tn.js vào game nếu chưa có hoặc file đã đổi (so mã băm), để không phá log/hành động đang chạy.
+async function ensureTN(tabId) {
+  const src = await (await fetch('tn.js')).text();
+  let h = 0;
+  for (let i = 0; i < src.length; i++) h = (h * 31 + src.charCodeAt(i)) | 0;
+  const target = { tabId, allFrames: true };
+  const checks = await chrome.scripting.executeScript({
+    target, world: 'MAIN', args: [h],
+    func: h => (typeof NetMgr !== 'undefined' && !(window.TN && window.TN.__hash === h)),
+  });
+  if (!checks.some(r => r.result)) return;
+  await chrome.scripting.executeScript({ target, world: 'MAIN', files: ['tn.js'] });
+  await chrome.scripting.executeScript({
+    target, world: 'MAIN', args: [h],
+    func: h => { if (window.TN) window.TN.__hash = h; },
+  });
+}
+
+// Gọi window.TN[name](...args) trong frame có game.
+async function callTN(name, args = []) {
+  status.textContent = 'Đang chạy...';
+  out.value = '';
+  try {
+    const tabId = await getTabId();
+    await ensureTN(tabId);
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'MAIN',
+      func: async (name, args) => (window.TN ? { ok: await window.TN[name](...args) } : null),
+      args: [name, args],
+    });
+    const hit = results.find(r => r.result);
+    if (!hit) {
+      status.textContent = 'Không tìm thấy game trong tab này (đã vào game chưa?)';
+      return;
+    }
+    const res = hit.result.ok;
+    out.value = typeof res === 'string' ? res : JSON.stringify(res, null, 2);
+    status.textContent = 'Xong';
+  } catch (e) {
+    status.textContent = 'Lỗi';
+    out.value = String(e && e.message || e);
+  }
+}
+
+const bind = (id, fn) => (document.getElementById(id).onclick = fn);
+bind('btnTasks', () => callTN('readDailyTasks'));
+bind('btnClaim', () => callTN('claimAll'));
+bind('btnGift', () => callTN('giftFriends'));
+bind('btnArena', () => callTN('arena'));
+bind('btnFete', () => callTN('guildFete'));
+bind('btnHelp', () => callTN('guildHelp'));
+bind('btnRecruit', () => callTN('recruit'));
+bind('btnEndless', () => callTN('endlessTrial'));
+bind('btnDungeon', () => callTN('guildDungeon'));
+bind('btnTravel', () => callTN('travel'));
+bind('btnDaily', () => callTN('dailyDungeon'));
+bind('btnTower', () => callTN('tower'));
+bind('btnDice', () => callTN('dice'));
+bind('btnSnatch', () => callTN('gldSnatch'));
+bind('btnClimb', () => callTN('towerClimb', [Number(document.getElementById('climbTimes').value) || 20]));
+bind('btnStop', () => callTN('stop'));
+bind('btnRecStart', () => callTN('startRecord'));
+bind('btnRecStop', () => callTN('stopRecord'));
+bind('btnRun', () => callTN('runCode', [document.getElementById('code').value]));
+bind('btnCopy', async () => {
+  await navigator.clipboard.writeText(out.value);
+  status.textContent = 'Đã copy';
+});
