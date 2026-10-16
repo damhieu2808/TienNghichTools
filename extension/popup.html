@@ -10,44 +10,88 @@
   #out { height: 300px; background: #f6f6f6; }
   .row { margin-bottom: 8px; }
   #status { color: #888; }
+  fieldset { border: 1px solid #ccc; border-radius: 6px; margin: 0 0 10px; padding: 6px 8px 2px; }
+  legend { font-weight: 600; padding: 0 4px; }
+  #btnAll { font-weight: 600; background: #2f7d32; color: #fff; border: 1px solid #276a2a; border-radius: 4px; }
+  #btnStop { background: #c62828; color: #fff; border: 1px solid #a51f1f; border-radius: 4px; }
+  .mode { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .mode label { cursor: pointer; padding: 3px 10px; border: 1px solid #bbb; border-radius: 12px; }
+  .mode input { display: none; }
+  .mode input:checked + span { font-weight: 600; }
+  .mode label:has(input:checked) { background: #333; color: #fff; border-color: #333; }
+  body.mode-prod .dev { display: none; }
+  .dev legend { color: #b26a00; }
+  .guide { margin: 0 0 8px; padding-left: 18px; color: #444; }
+  .guide li { margin-bottom: 2px; }
 </style>
 </head>
-<body>
-  <div class="row">
-    <button id="btnTasks">Lấy DS nhiệm vụ ngày</button>
-    <button id="btnClaim">Nhận thưởng hết</button>
+<body class="mode-prod">
+  <div class="mode">
+    <label><input type="radio" name="mode" value="prod"><span>Prod</span></label>
+    <label><input type="radio" name="mode" value="dev"><span>Dev</span></label>
   </div>
+
+  <fieldset class="dev">
+    <legend>Thêm tính năng mới</legend>
+    <ol class="guide">
+      <li>Bấm <b>Bắt đầu ghi</b></li>
+      <li>Trong game, làm tay tính năng đó 1–2 lượt</li>
+      <li>Bấm <b>Dừng &amp; xem log</b> → <b>Copy kết quả</b></li>
+      <li>Gửi log kèm luật chơi: khi nào dừng, ưu tiên gì, được/cấm tiêu gì</li>
+    </ol>
+    <div class="row">
+      <button id="btnRecStart">Bắt đầu ghi</button>
+      <button id="btnRecStop">Dừng &amp; xem log</button>
+    </div>
+    <div class="row">
+      <textarea id="code" placeholder="Dán code debug vào đây (biểu thức hoặc thân hàm có return)"></textarea>
+      <button id="btnRun">Chạy code</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Nhiệm vụ hàng ngày</legend>
+    <div class="row">
+      <button id="btnAll">Làm tất cả</button>
+      <button id="btnTasks">Lấy DS nhiệm vụ ngày</button>
+      <button id="btnClaim">Nhận thưởng hết</button>
+    </div>
+    <div class="row">
+      <button id="btnGift">Tặng tình bạn</button>
+      <button id="btnFete">Cung phụng</button>
+      <button id="btnHelp">Viện trợ</button>
+      <button id="btnRecruit">Chiêu mộ</button>
+      <button id="btnArena">Đấu Tiên Đài</button>
+      <button id="btnEndless">Thủ Vệ Tứ Phái</button>
+      <button id="btnDungeon">Bí Cảnh</button>
+      <button id="btnTravel">Treo Thưởng</button>
+      <button id="btnDaily">PB Ngày</button>
+      <button id="btnTower">Thông Thiên Tháp</button>
+      <button id="btnDice">Kiếm Hành</button>
+      <button id="btnSnatch">Đoạt Bách Tông</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Hành động đặc biệt</legend>
+    <div class="row">
+      <button id="btnClimb">Leo tháp</button>
+      <input id="climbTimes" type="number" value="20" min="1" style="width:50px"> lần
+    </div>
+    <div class="row">
+      <button id="btnSpirit">Thu hoạch Linh thú</button>
+      <button id="btnKfLol">Tỉ Thí Thiên Đạo</button>
+      <button id="btnYin">Cực Âm Địa</button>
+    </div>
+  </fieldset>
+
   <div class="row">
-    <button id="btnGift">Tặng tình bạn</button>
-    <button id="btnArena">Đấu Tiên Đài</button>
-    <button id="btnFete">Cung phụng</button>
-    <button id="btnHelp">Viện trợ</button>
-    <button id="btnRecruit">Chiêu mộ</button>
-    <button id="btnEndless">Thủ Vệ Tứ Phái</button>
-    <button id="btnDungeon">Bí Cảnh</button>
-    <button id="btnTravel">Treo Thưởng</button>
-    <button id="btnDaily">PB Ngày</button>
-    <button id="btnTower">Thông Thiên Tháp</button>
-    <button id="btnDice">Kiếm Hành</button>
-    <button id="btnSnatch">Đoạt Bách Tông</button>
-  </div>
-  <div class="row">
-    <button id="btnClimb">Leo tháp</button>
-    <input id="climbTimes" type="number" value="20" min="1" style="width:50px"> lần
     <button id="btnStop">Dừng</button>
-  </div>
-  <div class="row">
-    <button id="btnRecStart">Bắt đầu ghi</button>
-    <button id="btnRecStop">Dừng &amp; xem log</button>
-  </div>
-  <div class="row">
-    <textarea id="code" placeholder="Dán code debug vào đây (biểu thức hoặc thân hàm có return)"></textarea>
-    <button id="btnRun">Chạy code</button>
-  </div>
-  <div class="row">
+    <button id="btnPeek">Xem tiến trình</button>
     <button id="btnCopy">Copy kết quả</button>
     <span id="status"></span>
   </div>
+
   <textarea id="out" readonly></textarea>
   <script src="popup.js"></script>
 </body>

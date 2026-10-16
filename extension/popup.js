@@ -53,7 +53,19 @@ async function callTN(name, args = []) {
   }
 }
 
+// Chế độ Prod/Dev: Dev hiện thêm khung ghi log + chạy code; nhớ lựa chọn trong localStorage của extension.
+function setMode(mode) {
+  document.body.className = `mode-${mode}`;
+  document.querySelector(`input[name=mode][value=${mode}]`).checked = true;
+  try { localStorage.setItem('mode', mode); } catch {}
+}
+let savedMode = 'prod';
+try { savedMode = localStorage.getItem('mode') || 'prod'; } catch {}
+setMode(savedMode);
+document.querySelectorAll('input[name=mode]').forEach(r => (r.onchange = () => setMode(r.value)));
+
 const bind = (id, fn) => (document.getElementById(id).onclick = fn);
+bind('btnAll', () => callTN('runAll'));
 bind('btnTasks', () => callTN('readDailyTasks'));
 bind('btnClaim', () => callTN('claimAll'));
 bind('btnGift', () => callTN('giftFriends'));
@@ -69,7 +81,11 @@ bind('btnTower', () => callTN('tower'));
 bind('btnDice', () => callTN('dice'));
 bind('btnSnatch', () => callTN('gldSnatch'));
 bind('btnClimb', () => callTN('towerClimb', [Number(document.getElementById('climbTimes').value) || 20]));
+bind('btnSpirit', () => callTN('spiritHarvest'));
+bind('btnKfLol', () => callTN('kfLol'));
+bind('btnYin', () => callTN('extremeYin'));
 bind('btnStop', () => callTN('stop'));
+bind('btnPeek', () => callTN('peek'));
 bind('btnRecStart', () => callTN('startRecord'));
 bind('btnRecStop', () => callTN('stopRecord'));
 bind('btnRun', () => callTN('runCode', [document.getElementById('code').value]));

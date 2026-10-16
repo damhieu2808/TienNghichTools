@@ -84,11 +84,12 @@
     }, timeout);
     waiters.push(w);
   });
-  // Dịch phản hồi lỗi của server (msg là mã số) sang câu chữ của game.
+  // Dịch phản hồi lỗi của server (mã số ở msg, có lệnh để ở code) sang câu chữ của game.
   const errText = r => {
     if (!r) return 'không phản hồi';
-    const text = r.msg != null && GlobalCtrl.gInst().getNetErrorMsg(r.msg);
-    return text ? `"${text}" (${r.msg})` : JSON.stringify(r);
+    const id = r.msg != null && r.msg !== '' ? r.msg : r.code;
+    const text = id != null && GlobalCtrl.gInst().getNetErrorMsg(id);
+    return text ? `"${text}" (${id})` : JSON.stringify(r);
   };
   const longVal = v => (v && typeof v === 'object' ? v.m_highInt * 4294967296 + (v.m_lowInt >>> 0) : Number(v) || 0);
   const isFighting = () => EntityMgr.gInst().getIsFighting();
@@ -167,9 +168,14 @@
     ctrl.send11801Msg();
     const data = await waitRecv(11801);
     if (!data) return log('Không lấy được danh sách bạn bè');
-    const list = (data.list || []).filter(f => f.energy_give_status == 0);
-    log(`Bạn bè: ${(data.list || []).length} người, chưa tặng ${list.length}, đã tặng hôm nay ${data.energy_give_count}`);
-    if (!list.length) return log('Đã tặng hết');
+    // Server giới hạn 30 lượt tặng/ngày (lỗi 1013019 "đã đạt giới hạn"); client không có hằng số này.
+    const GIVE_MAX = 30;
+    const left = GIVE_MAX - data.energy_give_count;
+    const notGiven = (data.list || []).filter(f => f.energy_give_status == 0);
+    log(`Bạn bè: ${(data.list || []).length} người, chưa tặng ${notGiven.length}, đã tặng hôm nay ${data.energy_give_count}/${GIVE_MAX}`);
+    if (left <= 0) return log('Đã tặng đủ giới hạn hôm nay');
+    if (!notGiven.length) return log('Đã tặng hết');
+    const list = notGiven.slice(0, left);
     ctrl.send11812Msg(list);
     const r = await waitRecv(11812);
     log(`Tặng tình bạn cho ${list.length} người: ${r && r.res != 0 ? 'OK' : 'lỗi ' + errText(r)}`);
@@ -541,6 +547,127 @@
     log(`Leo tháp: xong ${times} lần, thắng ${win}`);
   }
 
+  // Linh thú (SpiritAnimalCtrl): thu hoạch tất cả chuồng (32022) nếu có sản phẩm đang chờ.
+  async function spiritHarvest() {
+    const ctrl = SpiritAnimalCtrl.gInst();
+    ctrl.send32019();
+    const info = await waitRecv(32019);
+    if (!info) return log('Linh thú: không lấy được thông tin');
+    const ready = (info.enclosure_list || []).reduce((n, e) => n + (e.list || []).length, 0);
+    if (!ready) return log('Linh thú: chưa có gì để thu hoạch');
+    ctrl.send32022();
+    const r = await waitRecv(32022);
+    log(`Linh thú: thu hoạch ${ready} loại sản phẩm: ${r && r.res == 1 ? 'OK' : 'lỗi ' + errText(r)}`);
+  }
+
+  // Tỉ Thí Thiên Đạo (KfLolCtrl): chỉ dùng lượt miễn phí (free_count, thường 3/ngày). Mỗi lượt:
+  // tìm đối thủ (14302) -> chờ ghép xong (14303 có field_end_time) -> đánh (14319) -> kết quả 14306.
+  async function kfLol() {
+    const ctrl = KfLolCtrl.gInst();
+    for (let n = 1; n <= 10; n++) {
+      ctrl.send14301();
+      const info = await waitRecv(14301);
+      if (!info) return log('Tỉ Thí: không lấy được thông tin');
+      if (!(info.free_count > 0)) return log(`Tỉ Thí: hết lượt miễn phí (đã đánh ${n - 1} lần), điểm ${info.point}`);
+      await waitNotFighting();
+      const matched = (async () => {
+        for (let i = 0; i < 12; i++) {
+          const m = await waitRecv(14303, 5000);
+          if (m && m.field_end_time > 0) return m;
+        }
+        return null;
+      })();
+      ctrl.send14302(0, info.is_skip);
+      const r = await waitRecv(14302);
+      if (!r || r.res != 1) return log(`Tỉ Thí lần ${n}: tìm đối thủ lỗi ${errText(r)}`);
+      const m = await matched;
+      if (!m) return log(`Tỉ Thí lần ${n}: chờ 60 giây vẫn chưa tìm được đối thủ`);
+      const result = waitRecv(14306, 15000);
+      ctrl.send14319();
+      const f = await waitRecv(14319);
+      if (!f || f.res != 1) return log(`Tỉ Thí lần ${n}: vào trận lỗi ${errText(f)}`);
+      const res = await result;
+      log(`Tỉ Thí lần ${n}: ${res ? (res.result == 1 ? 'thắng' : 'thua') : 'không rõ kết quả'}${res ? `, điểm ${res.old_point} → ${res.new_point}` : ''}`);
+      await sleep(1500);
+      await waitNotFighting();
+    }
+  }
+
+  // Cực Âm Địa (ExtremeYinCtrl): giành chỗ tu luyện tốt nhất (id càng nhỏ càng tốt, ít chỗ, thưởng cao).
+  // Xét các địa điểm từ tốt nhất: còn chỗ thì vào (32202, đánh lính canh luôn thắng) là xong; hết chỗ thì
+  // xem trước người đang ngồi (32203, xem được từ ngoài) và chỉ vào khi có người lực chiến ≤ 115% của mình,
+  // rồi khiêu chiến giành chỗ (32205). Thua thì xuống địa điểm thấp hơn, tới khi có chỗ ngồi.
+  const YIN_FC_RATIO = 1.15;
+  async function extremeYin() {
+    const ctrl = ExtremeYinCtrl.gInst();
+    const builds = ctrl.getCurlModel().getBuildConfig();
+    const me = RoleCtrl.gInst().getRoleInfo();
+    const myFc = longVal(me.fc);
+    const maxFc = Math.floor(myFc * YIN_FC_RATIO);
+    const name = id => (builds[id] && builds[id].name) || `địa điểm ${id}`;
+    const status = async () => {
+      ctrl.send32201();
+      const s = await waitRecv(32201);
+      ctrl.send32200();
+      const lands = await waitRecv(32200);
+      const num = {};
+      ((lands && lands.land_list) || []).forEach(l => (num[l.id] = l.num));
+      return { landId: s ? s.id : 0, seated: !!(s && s.start_time > 0), num };
+    };
+    const fight = async () => {
+      await sleep(1000);
+      await waitNotFighting();
+    };
+
+    let st = await status();
+    log(`Cực Âm: đang ở ${name(st.landId)}${st.seated ? ' (đang tu luyện)' : ' (chưa có chỗ)'}, lực chiến ${myFc}`);
+    const ids = Object.keys(builds).map(Number).sort((a, b) => a - b);
+    for (const id of ids) {
+      const b = builds[id];
+      if (st.seated && id >= st.landId) return log(`Cực Âm: giữ chỗ ở ${name(st.landId)}, không giành được chỗ tốt hơn`);
+      if (me.lev < b.open_lv) continue;
+      const full = b.seat > 0 && (st.num[id] || 0) >= b.seat;
+      let target = null;
+      if (full) {
+        for (let i = 0; i < 5 && !target; i++) {
+          ctrl.send32203(id, 1);
+          const list = await waitRecv(32203);
+          const weak = ((list && list.role_list) || []).filter(r => longVal(r.fc) <= maxFc);
+          if (weak.length) target = weak.reduce((a, c) => (longVal(c.fc) < longVal(a.fc) ? c : a));
+          else await sleep(500);
+        }
+        if (!target) {
+          log(`Cực Âm: ${name(id)} hết chỗ, không có ai lực chiến ≤ ${maxFc} (115%)`);
+          continue;
+        }
+      }
+      // Vào địa điểm (đánh lính canh) nếu chưa ở đó, hoặc đang ở đó mà chưa có chỗ và vẫn còn chỗ trống.
+      if (st.landId != id || !full) {
+        await waitNotFighting();
+        ctrl.send32202(id);
+        const r = await waitRecv(32202, 10000);
+        if (!r || r.res != 1) {
+          log(`Cực Âm: vào ${name(id)} lỗi ${errText(r)}`);
+          continue;
+        }
+        await fight();
+      }
+      if (target) {
+        await waitNotFighting();
+        ctrl.send32205(id, target.id);
+        const r = await waitRecv(32205, 10000);
+        await fight();
+        if (!r || r.res != 1) log(`Cực Âm: khiêu chiến ${target.name} ở ${name(id)} lỗi ${errText(r)}`);
+      }
+      st = await status();
+      if (st.seated && st.landId == id) {
+        return log(`Cực Âm: đã có chỗ ở ${name(id)}${target ? ` (thắng ${target.name}, LC ${longVal(target.fc)})` : ''}`);
+      }
+      log(`Cực Âm: chưa có chỗ ở ${name(id)}, thử địa điểm thấp hơn`);
+    }
+    log(`Cực Âm: kết thúc, đang ở ${name(st.landId)}${st.seated ? ' (đang tu luyện)' : ' (chưa có chỗ)'}`);
+  }
+
   // NV 11: PB Ngày — quét nhanh mọi phó bản ngày bằng lượt miễn phí (như nút quét nhanh, lệnh 11002 type 0).
   async function dailyDungeon() {
     const ctrl = DailyDungeonCtrl.gInst();
@@ -638,7 +765,7 @@
   }
 
   // ---- Debug ----
-  function runCode(code) {
+  async function runCode(code) {
     const safe = (v, depth = 0, seen = new WeakSet()) => {
       if (v === null || typeof v !== 'object') return typeof v === 'function' ? '[fn]' : v;
       if (seen.has(v)) return '[circular]';
@@ -652,7 +779,7 @@
     try {
       let fn;
       try { fn = new Function(`return (${code});`); } catch { fn = new Function(code); }
-      return { result: safe(fn()) };
+      return { result: safe(await fn()) }; // await để xem được kết quả Promise (vd TN._.sleep(100))
     } catch (e) {
       return { error: String(e && e.stack || e) };
     }
@@ -695,7 +822,43 @@
     return takeLog();
   };
 
+  // "Làm tất cả": chạy lần lượt mọi nhiệm vụ ngày (mỗi bước tự bỏ qua nếu đã xong), lỗi một bước không dừng
+  // cả lượt. Việc nhanh trước, Đoạt Bách Tông (chờ hồi chiêu ~2 phút/lần) sau cùng, rồi nhận thưởng + rương.
+  async function runAll() {
+    const steps = [
+      ['Tặng tình bạn', giftFriends],
+      ['Cung phụng', guildFete],
+      ['Viện trợ', guildHelp],
+      ['Chiêu mộ', recruit],
+      ['Đấu Tiên Đài', arena],
+      ['Thủ Vệ Tứ Phái', endlessTrial],
+      ['Bí Cảnh', guildDungeon],
+      ['Treo Thưởng', travel],
+      ['PB Ngày', dailyDungeon],
+      ['Thông Thiên Tháp', tower],
+      ['Kiếm Hành', dice],
+      ['Đoạt Bách Tông', gldSnatch],
+      ['Nhận thưởng', claimAll],
+    ];
+    stopFlag = false;
+    for (const [name, fn] of steps) {
+      if (stopFlag) return log('== Đã dừng ==');
+      log(`== ${name} ==`);
+      try {
+        await fn();
+      } catch (e) {
+        log(`LỖI ${name}: ${(e && e.message) || e}`);
+      }
+      await waitNotFighting();
+      await sleep(500);
+    }
+    log('== Xong tất cả ==');
+  }
+
   window.TN = {
+    runAll: action(runAll),
+    // Xem log của hành động đang chạy (không xóa), dùng khi tool có vẻ bị kẹt.
+    peek: () => `${out.join('\n') || '(chưa có log)'}\n--- đang trong trận: ${isFighting()}, Worker hẹn giờ: ${bg.ok}`,
     readDailyTasks,
     claimAll: action(claimAll),
     giftFriends: action(giftFriends),
@@ -711,6 +874,9 @@
     dice: action(dice),
     gldSnatch: action(gldSnatch),
     towerClimb: action(towerClimb),
+    spiritHarvest: action(spiritHarvest),
+    kfLol: action(kfLol),
+    extremeYin: action(extremeYin),
     stop: () => {
       stopFlag = true;
       return 'Đã gửi lệnh dừng, sẽ dừng sau trận đang đánh';
