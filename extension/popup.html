@@ -45,6 +45,7 @@
   .climb button { flex: 1; }
   .climb input { width: 56px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn); color: var(--text); font: inherit; }
   .climb span { color: var(--muted); }
+  .climb select { padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn); color: var(--text); font: inherit; }
 
   .guide { margin: 0 0 8px; padding-left: 18px; color: var(--muted); line-height: 1.5; }
   textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--out); color: var(--text); font: 12px Consolas, monospace; padding: 6px; resize: vertical; }
@@ -115,6 +116,16 @@
       <div class="climb">
         <button id="btnClimb">Leo tháp</button>
         <input id="climbTimes" type="number" value="20" min="1"><span>lần</span>
+      </div>
+      <div class="climb">
+        <button id="btnPb">Phó bản ngày</button>
+        <select id="pbType">
+          <option value="5">PB Pháp Bảo</option>
+          <option value="4">PB Tu Sĩ</option>
+          <option value="3">PB EXP</option>
+          <option value="2">PB Linh Thạch</option>
+        </select>
+        <input id="pbTimes" type="number" value="20" min="1"><span>lần</span>
       </div>
       <button id="btnSpirit">Linh thú</button>
       <button id="btnKfLol">Tỉ Thí Thiên Đạo</button>

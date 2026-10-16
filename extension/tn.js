@@ -519,32 +519,53 @@
     }
   }
 
-  // Leo Thông Thiên Tháp: đánh tầng kế tiếp (max_pass + 1) `times` lần, thua thì đánh lại, thắng thì lên tầng.
-  // Đánh không tốn tài nguyên. Dừng giữa chừng bằng TN.stop().
-  async function towerClimb(times = 20) {
+  // Phó bản ngày (DailyDungeonCtrl): đánh ải kế tiếp (max_pass + 1) của loại `type` `times` lần, thua thì đánh
+  // lại, thắng thì lên ải. Đánh không tốn lượt/tài nguyên (log: thua xong enter_count không đổi).
+  // dungeon_id = 1000000 + type*10000 + số ải (vd tháp type 1: 1011692 = tầng 1692; PB Linh Thạch type 2:
+  // 1020103 = ải 103). Dừng giữa chừng bằng TN.stop().
+  async function dungeonClimb(type, times, label, unit = 'ải') {
     const ctrl = DailyDungeonCtrl.gInst();
+    const base = 1000000 + type * 10000;
     stopFlag = false;
     let win = 0;
     for (let n = 1; n <= times; n++) {
-      if (stopFlag) return log(`Leo tháp: đã dừng sau ${n - 1} lần (thắng ${win})`);
-      ctrl.send11004(1);
+      if (stopFlag) return log(`${label}: đã dừng sau ${n - 1} lần (thắng ${win})`);
+      ctrl.send11004(type);
       const info = await waitRecv(11004);
-      if (!info || !info.max_pass_dungoen_id) return log('Leo tháp: không lấy được thông tin');
-      const id = info.max_pass_dungoen_id + 1;
-      const floor = id - 1010000; // dungeon_id tháp = 1010000 + số tầng (vd 1011692 = tầng 1692)
+      if (!info) return log(`${label}: không lấy được thông tin`);
+      const id = (info.max_pass_dungoen_id || base) + 1;
+      const stage = id - base;
       await waitNotFighting();
       const fight = waitRecv(14002, 10000); // kết quả trận: result 1 = thắng, 2 = thua
       ctrl.send11001(id, 0);
       const r = await waitRecv(11001, 10000);
-      if (!r || r.res != 1) return log(`Leo tháp lần ${n}: tầng ${floor} lỗi ${errText(r)}`);
+      if (!r || r.res != 1) return log(`${label} lần ${n}: ${unit} ${stage} lỗi ${errText(r)}`);
       const f = await fight;
       const won = f && f.result == 1;
       if (won) win++;
-      log(`Lần ${n}: tầng ${floor} - ${won ? 'thắng' : 'thua'}`);
+      log(`${label} lần ${n}: ${unit} ${stage} - ${won ? 'thắng' : 'thua'}`);
       await sleep(800);
       await waitNotFighting();
     }
-    log(`Leo tháp: xong ${times} lần, thắng ${win}`);
+    log(`${label}: xong ${times} lần, thắng ${win}`);
+  }
+
+  const towerClimb = (times = 20) => dungeonClimb(1, times, 'Leo tháp', 'tầng');
+
+  // Khiêu chiến phó bản ngày theo type: 2 Linh Thạch, 3 EXP, 4 Tu Sĩ, 5 Pháp Bảo (tên lấy từ config).
+  const dungeonFight = (type, times = 20) =>
+    dungeonClimb(type, times, (DailyDungeonCtrl.gInst().gDgnTypeCfg(type) || {}).name || `PB loại ${type}`);
+
+  // Debug: xem ải đã qua của từng loại phó bản để đối chiếu type với tên trong game.
+  async function listDungeonTypes() {
+    const ctrl = DailyDungeonCtrl.gInst();
+    const res = [];
+    for (let type = 1; type <= 8; type++) {
+      ctrl.send11004(type);
+      const info = await waitRecv(11004, 2000);
+      res.push(`type ${type}: ${info ? `đã qua ${info.max_pass_dungoen_id}, lượt ${info.enter_count}` : 'không có'}, cfg ${JSON.stringify(ctrl.gDgnTypeCfg(type) || null)}`);
+    }
+    return res.join('\n');
   }
 
   // Linh thú (SpiritAnimalCtrl): thu hoạch tất cả chuồng (32022) nếu có sản phẩm đang chờ.
@@ -895,6 +916,8 @@
     gldSnatch: action(gldSnatch),
     abyss: action(abyss),
     towerClimb: action(towerClimb),
+    dungeonFight: action(dungeonFight),
+    listDungeonTypes,
     spiritHarvest: action(spiritHarvest),
     kfLol: action(kfLol),
     extremeYin: action(extremeYin),

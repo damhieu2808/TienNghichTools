@@ -83,6 +83,10 @@ bind('btnDice', () => callTN('dice'));
 bind('btnSnatch', () => callTN('gldSnatch'));
 bind('btnAbyss', () => callTN('abyss'));
 bind('btnClimb', () => callTN('towerClimb', [Number(document.getElementById('climbTimes').value) || 20]));
+bind('btnPb', () => callTN('dungeonFight', [
+  Number(document.getElementById('pbType').value),
+  Number(document.getElementById('pbTimes').value) || 20,
+]));
 bind('btnSpirit', () => callTN('spiritHarvest'));
 bind('btnKfLol', () => callTN('kfLol'));
 bind('btnYin', () => callTN('extremeYin'));
