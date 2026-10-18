@@ -2809,6 +2809,11 @@
       jobRunning = false;
     }
   }
+  // Hạn key (ms, 0 = vĩnh viễn) do popup báo mỗi lần bấm nút; giữ ở window để nạp lại tn.js không mất.
+  let licenseExp = window.__tnLicExp || 0;
+  const setLicenseExp = exp => {
+    licenseExp = window.__tnLicExp = Number(exp) || 0;
+  };
   const jobGate = async () => {
     if (jobPending && !jobRunning) await runJob();
   };
@@ -2821,6 +2826,14 @@
   }
   async function onJobTimer() {
     job.timer = null;
+    // Key hết hạn: job chạy trong game nên popup không chặn được, tự tắt ở đây.
+    const serverMs = (() => {
+      try { const t = NetMgr.gInst().getTime(); return t < 1e12 ? t * 1000 : t; } catch { return Date.now(); }
+    })();
+    if (licenseExp && Math.max(serverMs, Date.now()) > licenseExp) {
+      jobStop();
+      return log('Job: key đã hết hạn, đã tắt job');
+    }
     scheduleJob();
     jobPending = true;
     if (busy || jobRunning) return; // hành động đang chạy sẽ tự gọi job ở jobGate / khi xong
@@ -2949,6 +2962,7 @@
     mirageMatch: action(mirageMatch),
     jobStart,
     jobStop,
+    setLicenseExp,
     jobStatus,
     // Popup hỏi định kỳ để hiện log trực tiếp khi hành động/job đang chạy.
     liveState: () => ({
