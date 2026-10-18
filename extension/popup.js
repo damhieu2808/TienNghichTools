@@ -42,6 +42,8 @@ async function readState(tabId) {
 // sau khi một nút trả kết quả (holdUntil) để kịp đọc kết quả đó.
 const jobLine = document.getElementById('jobLine');
 let holdUntil = 0;
+let showingLive = false;
+let firstPoll = true;
 async function poll() {
   try {
     const st = await readState(await getTabId());
@@ -51,7 +53,15 @@ async function poll() {
       out.value = st.log || '(chưa có log)';
       out.scrollTop = out.scrollHeight;
       setStatus('Đang chạy...', 'run');
+      showingLive = true;
+    } else if (!st.busy && (showingLive || (firstPoll && !out.value)) && st.last) {
+      // Việc vừa xong (hoặc mở popup lúc rảnh): hiện trọn log lần chạy cuối, kể cả dòng báo dừng/lỗi.
+      out.value = st.last;
+      out.scrollTop = out.scrollHeight;
+      setStatus(`Xong lúc ${st.lastAt}`, 'ok');
+      showingLive = false;
     }
+    firstPoll = false;
   } catch {}
 }
 setInterval(poll, 1500);
@@ -80,6 +90,7 @@ async function callTN(name, args = []) {
       args: [name, args],
     });
     holdUntil = Date.now() + 5000;
+    showingLive = false;
     const hit = results.find(r => r.result);
     if (!hit) {
       setStatus('Không tìm thấy game trong tab này (đã vào game chưa?)', 'err');
@@ -107,7 +118,10 @@ setMode(savedMode);
 document.querySelectorAll('input[name=mode]').forEach(r => (r.onchange = () => setMode(r.value)));
 
 const bind = (id, fn) => (document.getElementById(id).onclick = fn);
-bind('btnAll', () => callTN('runAll'));
+bind('btnAll', () => callTN('runAll', [
+  Number(document.getElementById('ancientFloors').value) || 6,
+  Number(document.getElementById('mirageSec').value) || 15,
+]));
 bind('btnTasks', () => callTN('readDailyTasks'));
 bind('btnClaim', () => callTN('claimAll'));
 bind('btnExtra', () => callTN('dailyExtra'));
@@ -123,6 +137,7 @@ bind('btnDaily', () => callTN('dailyDungeon'));
 bind('btnTower', () => callTN('tower'));
 bind('btnQuick', () => callTN('quickFight'));
 bind('btnDice', () => callTN('dice'));
+bind('btnBoss', () => callTN('gldBoss'));
 bind('btnSnatch', () => callTN('gldSnatch'));
 bind('btnAbyss', () => callTN('abyss'));
 bind('btnClimb', () => callTN('towerClimb', [Number(document.getElementById('climbTimes').value) || 20]));
@@ -132,11 +147,24 @@ bind('btnPb',() => callTN('dungeonFight', [
   Number(document.getElementById('pbTimes').value) || 20,
 ]));
 bind('btnSpirit', () => callTN('spiritHarvest'));
-bind('btnRuins', () => callTN('ruinsGather'));
+bind('btnRuins', () => callTN('ruinsAll'));
+bind('btnAllRepeat', () => callTN('runAllRepeat'));
+bind('btnTienDuyen', () => callTN('tienDuyen'));
 bind('btnAncient', () => callTN('ancientLand', [Number(document.getElementById('ancientFloors').value) || 6]));
 bind('btnMirage', () => callTN('mirageMatch', [Number(document.getElementById('mirageSec').value) || 15]));
 bind('btnKfLol', () => callTN('kfLol'));
 bind('btnYin', () => callTN('extremeYin'));
+bind('btnMountain', () => callTN('forbiddenMountain'));
+bind('btnKimThu', () => callTN('kimThu'));
+bind('btnUyChan', () => callTN('uyChan'));
+bind('btnHoaThu', () => callTN('hoaThu'));
+bind('btnThienThuan', () => callTN('thienThuan'));
+bind('btnTienNghich', () => callTN('tienNghich'));
+bind('btnTonHon', () => callTN('tonHon'));
+bind('btnVanHop', () => callTN('vanHop'));
+bind('btnDucAn', () => callTN('ducAn'));
+bind('btnLuckyWheel', () => callTN('luckyWheel'));
+bind('btnAllEvents', () => callTN('runAllEvents'));
 bind('btnMwPreview', () => callTN('mwPreview'));
 bind('btnMwOpt', () => callTN('mwOptimize'));
 bind('btnMwRestore', () => callTN('mwRestore'));
