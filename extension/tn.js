@@ -815,7 +815,71 @@
     if (!tax) log('Thu thuế: không lấy được thông tin');
     else if (!tax1 || !(tax1.left_times > 0)) log('Thu thuế: hết lượt');
     else log(`Thu thuế: ${res(await ask(30702, { type: 1 }))}`);
+    await sleep(500);
+
+    // Quà giới hạn ngày (30120 {type} xem, 30121 {gift_id} mua; mỗi gói 1 lần/ngày): mỗi loại 1 gói miễn phí
+    // + 1 gói 300 Tiên Ngọc. Gói đã mua hôm nay server từ chối.
+    for (const [type, gifts] of LIMIT_GIFTS) {
+      await ask(30120, { type });
+      for (const [i, gift_id] of gifts.entries()) {
+        log(`Quà giới hạn loại ${type}, gói ${gift_id}${i == 0 ? ' (miễn phí)' : ' (Tiên Ngọc)'}: ${res(await ask(30121, { gift_id }))}`);
+        await sleep(300);
+      }
+    }
+
+    // Quà theo ngày (31501 xem, 31502 {id} nhận): gift_list mỗi ngày một gói, status 1 = nhận được, 2 = đã nhận.
+    const dayGift = await ask(31501);
+    if (!dayGift || dayGift.status != 1) log('Quà theo ngày: sự kiện chưa mở');
+    else {
+      const ready = (dayGift.gift_list || []).filter(g => g.status == 1);
+      if (!ready.length) log('Quà theo ngày: không có gói nhận được');
+      for (const g of ready) {
+        log(`Quà theo ngày ${g.day}: ${res(await ask(31502, { id: g.id }))}`);
+        await sleep(300);
+      }
+    }
+
+    // Quay 1 lần/ngày rồi nhận mốc tích lũy (stage_list status 1 = nhận được, 2 = đã nhận): 30611 xem / 30612 quay /
+    // 30613 {stage} nhận mốc, 19305 xem / 19308 quay / 19309 {stage} nhận mốc. Server không cho biết đã quay hôm nay
+    // chưa (left_free_times = 0 vẫn quay được) nên tool tự đánh dấu trong localStorage của game.
+    for (const [infoCmd, drawCmd, stageCmd, name] of DAILY_DRAWS) {
+      let info = await ask(infoCmd);
+      if (!info || info.status != 1) {
+        log(`${name}: sự kiện chưa mở`);
+        continue;
+      }
+      if (dailyDrawDone(drawCmd)) log(`${name}: hôm nay đã quay`);
+      else {
+        const r = await ask(drawCmd, { times: 1 });
+        log(`${name}: quay 1 lần: ${res(r)}`);
+        if (r && r.res == 1) {
+          dailyDrawMark(drawCmd);
+          info = r;
+        }
+        await sleep(300);
+      }
+      let got = 0;
+      for (const s of info.stage_list || []) {
+        if (s.status != 1) continue;
+        if ((await ask(stageCmd, { stage: s.stage }) || {}).res == 1) got++;
+        await sleep(300);
+      }
+      log(`${name}: nhận ${got} mốc tích lũy (đang ở mốc ${info.cur_stage})`);
+    }
   }
+  const LIMIT_GIFTS = [[1, [3799, 3798]], [2, [3899, 3898]], [3, [30001, 30002]]];
+  const DAILY_DRAWS = [[30611, 30612, 30613, 'Quay 30612'], [19305, 19308, 19309, 'Quay 19308']];
+  const dailyDrawKey = 'tnDailyDraw';
+  const dailyDrawList = () => {
+    try {
+      const s = JSON.parse(localStorage.getItem(dailyDrawKey) || '{}');
+      return s.day === today() ? s.done || [] : [];
+    } catch { return []; }
+  };
+  const dailyDrawDone = cmd => dailyDrawList().includes(cmd);
+  const dailyDrawMark = cmd => {
+    try { localStorage.setItem(dailyDrawKey, JSON.stringify({ day: today(), done: [...dailyDrawList(), cmd] })); } catch {}
+  };
 
   // Cổ Thần Địa (AdvCtrl): đánh liên tục từng tầng tới khi kẹt (hết tướng, hết việc làm được) hoặc TN.stop().
   // Mỗi tầng 25 ô: 4 tướng thường mở ra boss (ô 13); thắng boss thì 11063 ô boss để sang tầng. Ô đã mở thì
@@ -1189,6 +1253,73 @@
   }
 
   const towerClimb = (times = 20) => dungeonClimb(1, times, 'Leo tháp', 'tầng');
+
+  // Tháp phái (vd Ma Linh Tháp type 8): mỗi ngày mở loại khác nhau, 11021 dungeon_list cho biết loại nào
+  // is_open (type 1 là Thông Thiên Tháp, làm riêng). Mỗi loại leo tối đa CAMP_DAILY tầng/ngày (today_pass) bằng
+  // 11001 tầng kế tiếp, thua thì dừng loại đó; xong thì quét (11005 tầng cao nhất) hết lượt miễn phí.
+  const CAMP_DAILY = 10;
+  const CAMP_FREE_SWEEP = 2;
+  async function campTowers() {
+    const ctrl = DailyDungeonCtrl.gInst();
+    const list = ((await evReq(11021)) || {}).dungeon_list || [];
+    const open = list.filter(d => d.is_open == 1 && d.type != 1);
+    if (!open.length) return log('Tháp phái: hôm nay không có tháp nào mở');
+    for (const d of open) {
+      const type = d.type;
+      const base = 1000000 + type * 10000;
+      const name = (ctrl.gDgnTypeCfg(type) || {}).name || `Tháp loại ${type}`;
+      let info;
+      let climbed = 0;
+      let stopWhy = '';
+      while (!stopFlag) {
+        await jobGate();
+        ctrl.send11004(type);
+        info = await waitRecv(11004);
+        if (!info) return log(`${name}: không lấy được thông tin`);
+        if ((info.today_pass || 0) >= CAMP_DAILY) break;
+        const id = (info.max_pass_dungoen_id || base) + 1;
+        await waitNotFighting();
+        const fight = waitRecv(14002, 10000);
+        ctrl.send11001(id, 0);
+        const r = await waitRecv(11001, 10000);
+        if (!r || r.res != 1) {
+          stopWhy = `lỗi ở tầng ${id - base}: ${errText(r)}`;
+          log(`${name} tầng ${id - base}: lỗi ${errText(r)}`);
+          break;
+        }
+        const f = await fight;
+        const won = f && f.result == 1;
+        log(`${name} tầng ${id - base}: ${won ? 'thắng' : 'thua'}`);
+        await sleep(800);
+        await waitNotFighting();
+        if (!won) {
+          stopWhy = `THUA tầng ${id - base}, không leo tiếp (cần mạnh hơn rồi leo tay)`;
+          break;
+        }
+        climbed++;
+      }
+      if (stopFlag) return log(`${name}: đã dừng`);
+      ctrl.send11004(type);
+      info = await waitRecv(11004);
+      if (!info) return log(`${name}: không lấy được thông tin`);
+      log(`${name}: leo thêm ${climbed} tầng, hôm nay qua ${info.today_pass}/${CAMP_DAILY}${stopWhy ? ` - ${stopWhy}` : ''}`);
+      if (!info.max_pass_dungoen_id) {
+        log(`${name}: chưa qua tầng nào, không quét được`);
+        continue;
+      }
+      const free = ((ctrl.gDgnTypeCfg(type) || {}).count || CAMP_FREE_SWEEP) - (info.enter_count || 0);
+      for (let i = 0; i < free && !stopFlag; i++) {
+        ctrl.send11005(info.max_pass_dungoen_id);
+        const r = await waitRecv(11005);
+        log(`${name}: quét tầng ${info.max_pass_dungoen_id - base} lần ${i + 1}/${free}: ${r && r.res == 1 ? 'OK' : 'lỗi ' + errText(r)}`);
+        if (!r || r.res != 1) break;
+        await sleep(500);
+      }
+      if (free <= 0) log(`${name}: hết lượt quét miễn phí`);
+      await goCity();
+      await sleep(500);
+    }
+  }
 
   // Khiêu chiến phó bản ngày theo type: 2 Linh Thạch, 3 EXP, 4 Tu Sĩ, 5 Pháp Bảo (tên lấy từ config).
   // type 0 = tất cả: lần lượt từng loại theo thứ tự trong popup, mỗi loại `times` lần.
@@ -1640,7 +1771,7 @@
   // rút, nên lặp tới khi hết việc. Quà của kỳ (12323, [miễn phí, Tiên Ngọc], cho vật phẩm rút) mua trước khi rút;
   // kỳ chưa biết mã quà thì bỏ qua.
   const DA_TERMS = {
-    1056006: ['Dục Ấn', 1001351, []],
+    1056006: ['Dục Ấn', 1001351, [9502, 9503]],
     1056007: ['Đế Hồn', 1001361, [9602, 9603]],
   };
   async function ducAn() {
@@ -1719,15 +1850,92 @@
     log(`Tiên duyên: nhận ${got} mốc${got ? '' : ' (chưa có mốc nào xong)'}`);
   }
 
+  // Chư Thiên Luận Đạo: 14211 thông tin (my_rank_lev, remain_count = lượt miễn phí còn lại), 14216 top 3 BXH,
+  // 14218 {index, rank, id} bái top (is_thumb 0 = chưa bái), 14213 làm mới đối thủ -> 14214 enemy_list,
+  // 14212 {index, id} khiêu chiến -> 14219 kết quả (s_rank_change > 0 = thắng), 14222 quét 1 lượt.
+  // Mỗi lượt: xem danh sách 5 đối thủ đang hiện (server đẩy 14214 kèm 14211, không có thì làm mới 14213), chọn người
+  // hạng cao hơn mình (rank nhỏ hơn) có lực chiến ≤ CT_FC_RATIO lần mình, hạng cao nhất trước; không có ai thì quét.
+  // Khiêu chiến giống game: 14220 {id} xem đội hình rồi mới 14212. Lỗi 170002 (danh sách cũ) thì làm mới, thử lại.
+  const CT_FC_RATIO = 1.2;
+  const CT_RETRY = 3;
+  async function chuThien() {
+    const myFc = longVal(RoleCtrl.gInst().getRoleInfo().fc);
+    const maxFc = Math.floor(myFc * CT_FC_RATIO);
+    const top = await evReq(14216);
+    for (const t of (top && top.top_rank_list) || []) {
+      if (t.is_thumb != 0) continue;
+      const r = await evReq(14218, { index: t.index, rank: t.rank, id: t.id });
+      log(`Luận Đạo: bái top ${t.rank} ${t.name}: ${evOk(r) ? 'OK' : 'lỗi ' + errText(r)}`);
+      await sleep(500);
+    }
+    const net = NetMgr.gInst();
+    let n = 1;
+    let fails = 0;
+    let refresh = false;
+    const lost = new Set();
+    while (n <= 30 && !stopFlag) {
+      await jobGate();
+      const waitList = waitRecv(14214, 3000);
+      const info = await evReq(14211);
+      if (!info) return log('Luận Đạo: không lấy được thông tin');
+      if (!(info.remain_count > 0)) return log(`Luận Đạo: hết lượt miễn phí, hạng ${info.my_rank_lev}`);
+      const myRank = info.my_rank_lev;
+      let shown = await waitList;
+      if (!shown || refresh) {
+        const w = waitRecv(14214);
+        net.sendMsg(14213, {});
+        shown = await w;
+        refresh = false;
+      }
+      const list = (shown && shown.enemy_list) || [];
+      const ok = list.filter(e => e.rank < myRank && longVal(e.fc) <= maxFc && !lost.has(longVal(e.id)));
+      if (ok.length) {
+        const enemy = ok.reduce((a, b) => (b.rank < a.rank ? b : a));
+        await waitNotFighting();
+        await evReq(14220, { id: enemy.id });
+        await sleep(500);
+        // Server chặn bấm liên tục ("Thao tác nhanh quá rồi~", 100009): chờ rồi thử lại cùng đối thủ.
+        let result, r;
+        for (let tries = 0; tries < 4; tries++) {
+          result = waitRecv(14219, 15000);
+          r = await evReq(14212, { index: enemy.index, id: enemy.id });
+          if (!r || r.res == 1 || (r.msg != 100009 && r.code != 100009)) break;
+          await sleep(3000);
+        }
+        if (!evOk(r)) {
+          log(`Luận Đạo lượt ${n}: khiêu chiến ${enemy.name} lỗi ${errText(r)}`);
+          if (++fails >= CT_RETRY) return log('Luận Đạo: lỗi liên tục, dừng');
+          refresh = true;
+          await sleep(1000);
+          continue;
+        }
+        fails = 0;
+        const res = await result;
+        const won = res && res.s_rank_change > 0;
+        if (!won) lost.add(longVal(enemy.id)); // thua thì không chọn lại người này (danh sách thường giữ nguyên)
+        log(`Luận Đạo lượt ${n}: đánh ${enemy.name} hạng ${enemy.rank} (LC ${longVal(enemy.fc)}) - ` +
+          (won ? `thắng, hạng ${myRank} → ${res.s_rank}` : res ? 'thua' : 'không rõ kết quả'));
+        n++;
+        await sleep(3000);
+        await waitNotFighting();
+        continue;
+      }
+      const r = await evReq(14222);
+      log(`Luận Đạo lượt ${n}: ${list.length} đối thủ, không ai hạng cao hơn với LC ≤ ${maxFc} (${CT_FC_RATIO * 100}%) ` +
+        `-> quét ${evOk(r) ? 'OK' : 'lỗi ' + errText(r)}`);
+      n++;
+      if (!evOk(r)) return;
+      await sleep(500);
+    }
+  }
+
   // "Hàng ngày nhiều lần" - Làm tất cả: chạy lần lượt mọi việc trong nhóm, lỗi một việc không dừng cả lượt.
   async function runAllRepeat() {
     const steps = [
       ['Linh thú', spiritHarvest],
       ['Di tích', ruinsAll],
-      ['Tỉ Thí Thiên Đạo', kfLol],
       ['Cực Âm Địa', extremeYin],
       ['Núi cấm', forbiddenMountain],
-      ['Tiên duyên', tienDuyen],
     ];
     stopFlag = false;
     for (const [name, fn] of steps) {
@@ -1883,6 +2091,8 @@
     const myFc = longVal(me.fc);
     const maxFc = Math.floor(myFc * YIN_FC_RATIO);
     const name = id => (builds[id] && builds[id].name) || `địa điểm ${id}`;
+    // Chiến lệnh Cực Âm (12321/12322 type 6): nhận các mốc đã đủ điểm.
+    if (!(await evPass(6, 'Cực Âm'))) log('Cực Âm: chiến lệnh không có mốc mới để nhận');
     const status = async () => {
       ctrl.send32201();
       const s = await waitRecv(32201);
@@ -2889,9 +3099,13 @@
       ['Treo Thưởng', travel],
       ['PB Ngày', dailyDungeon],
       ['Thông Thiên Tháp', tower],
+      ['Tháp phái', campTowers],
       ['Tác chiến nhanh', quickFight],
       ['Kiếm Hành', dice],
       ['Vực U Minh', abyss],
+      ['Tỉ Thí Thiên Đạo', kfLol],
+      ['Chư Thiên Luận Đạo', chuThien],
+      ['Tiên duyên', tienDuyen],
       ['Ảo cảnh trận pháp', () => mirageMatch(seconds)],
       ['Cổ Thần Địa', () => ancientLand(floors)],
       ['Bách Phạt Tông', gldBoss],
@@ -2942,6 +3156,10 @@
     gldSnatch: action(gldSnatch),
     abyss: action(abyss),
     towerClimb: action(towerClimb),
+    campTowers: action(() => {
+      stopFlag = false;
+      return campTowers();
+    }),
     dungeonFight: action(dungeonFight),
     listDungeonTypes,
     mwPreview,
@@ -2977,6 +3195,10 @@
     // Chạy job ngay: bật cờ chờ, action tự chạy job khi kết thúc.
     jobRunNow: action(() => { jobPending = true; }),
     kfLol: action(kfLol),
+    chuThien: action(() => {
+      stopFlag = false;
+      return chuThien();
+    }),
     forbiddenMountain: action(forbiddenMountain),
     kimThu: action(() => {
       stopFlag = false;
