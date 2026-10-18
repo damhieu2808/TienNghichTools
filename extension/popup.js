@@ -207,6 +207,7 @@ bind('btnVanHop', () => callTN('vanHop'));
 bind('btnDucAn', () => callTN('ducAn'));
 bind('btnLuckyWheel', () => callTN('luckyWheel'));
 bind('btnAllEvents', () => callTN('runAllEvents'));
+bind('btnUyenNhi', () => callTN('uyenNhi'));
 bind('btnMwPreview', () => callTN('mwPreview'));
 bind('btnMwOpt', () => callTN('mwOptimize'));
 bind('btnMwRestore', () => callTN('mwRestore'));

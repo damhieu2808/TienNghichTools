@@ -1836,6 +1836,185 @@
     log(`Vòng quay: quay ${spins} lần, còn ${props.findGoodsNum(LW_TICKET)} vé`);
   }
 
+  // Cứu Uyển Nhi (MzCtrl, bản đồ nhiều ô, đi từ cột này sang cột kế): 20201 bản đồ {layer, event_list[{event_id,
+  // index, status, relic_list, fc}]}; index = cột * 10 + hàng. status (MzConst.EEvtSt): 0 chưa chọn, 1 đã vào,
+  // 2 thắng - chờ chọn bảo vật, 3 xong, 4 bỏ (nhánh không chọn). Loại ô = model.gETypeCfg(event_id) (MzConst.EEvtTp,
+  // xử lý theo MzCtrl.oprEvt): 1, 2, 8, 10 đánh; 3, 4 quán thuê tướng; 5, 6 hồi máu; 7 Sự kiện phường (cửa hàng).
+  // Vào ô: 20202 {index, op_type (EEvtOp: 1 đánh, 2 dùng, 3 thuê, 4 cửa hàng), arg_list}. Đánh: 20205 {index}
+  // (đội hình type 25 đã lưu) -> 20212 {index, relic_index} chọn bảo vật. Thuê: 20210 {index} xem -> op 3 arg = id
+  // tướng -> 20205. Hồi máu: op 2 -> 20215 {index, use 1}. Cửa hàng: op 4 -> 20213 xem -> 20205 từ bỏ (không mua).
+  // Hết tầng: 20219 nhận thưởng tầng, 20204 {is_diff} sang tầng sau (tầng 3 là cuối).
+  // Đường đi: chỉ sang cột kế, ô cùng hàng hoặc chéo liền kề (hàng ±1); cột chỉ có 1 ô (ô boss) đi được từ mọi
+  // hàng. Chọn đường qua nhiều Sự kiện phường nhất; bằng nhau thì ưu tiên ô đánh LC thấp, rồi hồi máu, rồi thuê.
+  const UN_FIGHT = [1, 2, 8, 10];
+  const UN_HIRE = [3, 4];
+  const UN_HP = [5, 6];
+  const UN_SHOP = 7;
+  const UN_LAST_LAYER = 3;
+  const UN_DIFF = 1; // sang tầng sau ở độ khó cao (như chơi tay); server từ chối thì thử độ thường
+  async function uyenNhi() {
+    const model = MzCtrl.gInst().getCurlModel();
+    const etype = e => Number(model.gETypeCfg(e.event_id)) || 0;
+    const col = i => Math.floor(i / 10);
+    const map = async () => (await evReq(20201)) || null;
+    const kind = e => {
+      const t = etype(e);
+      if (UN_FIGHT.includes(t)) return `đánh, LC ${longVal(e.fc)}`;
+      if (UN_HIRE.includes(t)) return 'thuê tướng';
+      if (UN_HP.includes(t)) return 'hồi máu';
+      return t == UN_SHOP ? 'Sự kiện phường' : `loại ${t}`;
+    };
+    const tag = e => `ô ${e.index} (${kind(e)})`;
+    const res = r => (evOk(r) ? 'OK' : 'lỗi ' + errText(r));
+    let layer = '?';
+    const L = msg => log(`Uyển Nhi T${layer}: ${msg}`);
+    // Bản đồ 1 dòng để debug: theo cột, mỗi ô "index+loại+trạng thái". Loại: Đ đánh, B boss, T thuê, H hồi máu,
+    // P Sự kiện phường. Trạng thái: ✓ xong, × bỏ, * đang làm / chờ chọn bảo vật.
+    const ch = e => {
+      const t = etype(e);
+      return t == 8 ? 'B' : UN_FIGHT.includes(t) ? 'Đ' : UN_HIRE.includes(t) ? 'T' : UN_HP.includes(t) ? 'H' : t == UN_SHOP ? 'P' : `?${t}`;
+    };
+    const mapText = evs => {
+      const cols = {};
+      evs.forEach(e => (cols[col(e.index)] = cols[col(e.index)] || []).push(e));
+      return Object.keys(cols).sort((a, b) => a - b)
+        .map(c => cols[c].sort((a, b) => a.index - b.index).map(e => `${e.index}${ch(e)}${['', '*', '*', '✓', '×'][e.status] || ''}`).join(' '))
+        .join(' | ');
+    };
+    let shownLayer = null;
+    const fight = async e => {
+      await waitNotFighting();
+      const result = waitRecv(14002, 10000);
+      const r = await evReq(20205, { index: e.index });
+      if (!evOk(r)) {
+        L(`${tag(e)} đánh ${res(r)}`);
+        return false;
+      }
+      const f = await result;
+      await sleep(800);
+      await waitNotFighting();
+      const won = f && f.result == 1;
+      L(`${tag(e)} - ${won ? 'thắng' : 'thua'}`);
+      return won;
+    };
+    let m = await map();
+    if (!m) return L('sự kiện chưa mở');
+    for (let step = 0; step < 100 && !stopFlag; step++) {
+      await jobGate();
+      m = await map();
+      if (!m) return L('không lấy được bản đồ');
+      const evs = m.event_list || [];
+      layer = m.layer;
+      if (shownLayer !== layer) {
+        shownLayer = layer;
+        L(`bản đồ (Đ đánh, B boss, T thuê, H hồi máu, P phường; ✓ xong, × bỏ, * đang làm): ${mapText(evs)}`);
+      }
+      // Việc dở: chọn bảo vật (luôn lấy bảo vật 1) / làm nốt ô đã vào.
+      const won = evs.find(e => e.status == 2);
+      if (won) {
+        L(`${tag(won)} chọn bảo vật 1: ${res(await evReq(20212, { index: won.index, relic_index: 1 }))}`);
+        await sleep(300);
+        continue;
+      }
+      const act = evs.find(e => e.status == 1);
+      if (act) {
+        const t = etype(act);
+        if (UN_FIGHT.includes(t) || longVal(act.fc) > 0) {
+          if (!(await fight(act))) return L('thua, dừng (cần mạnh hơn)');
+        } else {
+          let r;
+          if (UN_HP.includes(t)) r = await evReq(20215, { index: act.index, use: 1 });
+          else if (t == UN_SHOP) {
+            const shop = await evReq(20213, { index: act.index });
+            const goods = (shop && shop.goods_list) || [];
+            if (goods.length) L(`cửa hàng có ${goods.length} món (không mua)`);
+            r = await evReq(20205, { index: act.index });
+          } else r = await evReq(20205, { index: act.index });
+          L(`${tag(act)}${t == UN_SHOP ? ' bỏ qua' : ''}: ${res(r)}`);
+          if (!evOk(r)) return L(`kẹt ở ${tag(act)}, làm tay ô này rồi chạy lại`);
+        }
+        await sleep(500);
+        continue;
+      }
+      const done = evs.filter(e => e.status == 3);
+      const curNode = done.length ? done.reduce((a, b) => (col(b.index) > col(a.index) ? b : a)) : null;
+      const cur = curNode ? col(curNode.index) : 0;
+      const ahead = evs.filter(e => e.status == 0 && col(e.index) > cur);
+      if (!ahead.length) {
+        // Hết ô: nhận thưởng tầng rồi sang tầng sau.
+        const aw = await evReq(20219);
+        // 218039 "Đã nhận thưởng rương rồi": tầng này đã xong từ trước.
+        L(`xong tầng ${m.layer}, nhận thưởng: ${aw && (aw.msg == 218039 || aw.code == 218039) ? 'đã nhận từ trước' : res(aw)}`);
+        if (m.layer >= UN_LAST_LAYER) return L('đã xong tầng cuối');
+        await sleep(500);
+        let r = await evReq(20204, { is_diff: UN_DIFF });
+        if (!evOk(r) && UN_DIFF) {
+          L(`sang tầng sau độ khó ${UN_DIFF} ${res(r)}, thử độ thường`);
+          r = await evReq(20204, { is_diff: 0 });
+        }
+        if (!evOk(r)) return L(`sang tầng sau ${res(r)}`);
+        const nm = await map();
+        if (!nm || nm.layer == m.layer) return L('không sang được tầng sau, dừng');
+        L(`sang tầng ${nm.layer}`);
+        await sleep(500);
+        continue;
+      }
+      const colsAll = {};
+      evs.forEach(e => (colsAll[col(e.index)] = (colsAll[col(e.index)] || 0) + 1));
+      const reach = (from, to) => !from || colsAll[col(to.index)] == 1 || Math.abs((from.index % 10) - (to.index % 10)) <= 1;
+      const colIds = [...new Set(ahead.map(e => col(e.index)))].sort((a, b) => a - b);
+      const val = new Map();
+      for (let c = colIds.length - 1; c >= 0; c--) {
+        const nextCol = ahead.filter(e => col(e.index) == colIds[c + 1]);
+        for (const e of ahead.filter(x => col(x.index) == colIds[c])) {
+          const after = nextCol.filter(n => reach(e, n)).map(n => val.get(n));
+          val.set(e, (etype(e) == UN_SHOP ? 1000 : 0) + 1 + (after.length ? Math.max(...after) : 0));
+        }
+      }
+      const rank = e => {
+        const t = etype(e);
+        if (UN_FIGHT.includes(t)) return longVal(e.fc);
+        if (t == UN_SHOP) return 0;
+        return UN_HP.includes(t) ? 1e15 : UN_HIRE.includes(t) ? 2e15 : 3e15;
+      };
+      const opts = ahead.filter(e => col(e.index) == colIds[0] && reach(curNode, e))
+        .sort((a, b) => val.get(b) - val.get(a) || rank(a) - rank(b));
+      if (!opts.length) return L(`không có ô nào ở cột ${colIds[0]} nối được với ô ${curNode && curNode.index}`);
+      // Debug đường đi: ô hiện tại, các ô đi được (kèm số Sự kiện phường còn gom được nếu đi ô đó), đường dự tính.
+      const plan = [opts[0]];
+      for (let c = 1; c < colIds.length; c++) {
+        const nx = ahead.filter(e => col(e.index) == colIds[c] && reach(plan[plan.length - 1], e));
+        if (!nx.length) break;
+        plan.push(nx.reduce((a, b) => (val.get(b) > val.get(a) ? b : a)));
+      }
+      L(`đang ở ô ${curNode ? curNode.index : 'xuất phát'}, ô đi được: ${opts.map(e => `${e.index}${ch(e)}(${Math.floor(val.get(e) / 1000)}P)`).join(' ')}` +
+        ` -> đường dự tính ${plan.map(e => `${e.index}${ch(e)}`).join('→')}`);
+      let moved = false;
+      for (const e of opts) {
+        const t = etype(e);
+        let r;
+        if (UN_FIGHT.includes(t)) r = await evReq(20202, { index: e.index, op_type: 1, arg_list: [] });
+        else if (UN_HP.includes(t)) r = await evReq(20202, { index: e.index, op_type: 2, arg_list: [] });
+        else if (t == UN_SHOP) r = await evReq(20202, { index: e.index, op_type: 4, arg_list: [] });
+        else if (UN_HIRE.includes(t)) {
+          const info = await evReq(20210, { index: e.index });
+          const heroes = (info && info.hero_list) || [];
+          if (!heroes.length) continue;
+          const best = heroes.reduce((a, b) => (longVal(b.fc) > longVal(a.fc) ? b : a));
+          r = await evReq(20202, { index: e.index, op_type: 3, arg_list: [{ arg: best.id }] });
+          if (evOk(r)) L(`${tag(e)} thuê ${best.name}`);
+        } else continue;
+        if (evOk(r)) {
+          moved = true;
+          break;
+        }
+        L(`vào ${tag(e)} ${res(r)}`);
+      }
+      if (!moved) return L(`không vào được ô nào ở cột ${colIds[0]}: ${opts.map(tag).join(', ')}`);
+      await sleep(500);
+    }
+  }
+
   // Tiên duyên: 32101 thông tin nhóm (không phản hồi = chưa có nhóm), 32121 {id} nhận thưởng mốc nhiệm vụ.
   // Chưa biết danh sách mốc trong 32101 nên thử nhận id 1..TD_MAX_ID; mốc chưa xong / đã nhận server từ chối.
   const TD_MAX_ID = 12;
@@ -1966,6 +2145,7 @@
       ['Vạn Hợp Tu Hành', vanHop],
       ['Dục Ấn Thiên Chiếu / Đế Hồn Anh Phách', ducAn],
       ['Vòng quay may mắn', luckyWheel],
+      ['Cứu Uyển Nhi', uyenNhi],
     ];
     stopFlag = false;
     for (const [name, fn] of events) {
@@ -3230,6 +3410,10 @@
       return ducAn();
     }),
     runAllEvents: action(runAllEvents),
+    uyenNhi: action(() => {
+      stopFlag = false;
+      return uyenNhi();
+    }),
     luckyWheel: action(() => {
       stopFlag = false;
       return luckyWheel();
