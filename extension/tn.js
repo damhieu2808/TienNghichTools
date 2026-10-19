@@ -669,17 +669,25 @@
     const myId = longVal(me.id);
     const myGuild = longVal(me.guild_id);
     const myFc = longVal(me.fc);
+    // kf_ruins_team_list chỉ chứa đội đang ngồi ô, nên đội rảnh = mọi đội đã mở khóa trừ các đội đó.
+    const ctrl = RainRuinsCtrl.gInst();
+    let allTeams = [];
+    try { allTeams = ctrl.getAllTeamId() || []; } catch {}
+    allTeams = allTeams.filter(id => {
+      try { return ctrl.checkTeamUnLock(id) !== false; } catch { return true; }
+    });
     const status = async () => {
       const s = await ask(32710, { flag: 1 });
       if (!s) return null;
+      const busy = new Set((s.kf_ruins_team_list || []).filter(t => t.layer).map(t => t.team_id));
       return {
         rob: s.daily_rob_times || 0,
-        idle: (s.kf_ruins_team_list || []).filter(t => !t.layer).map(t => t.team_id),
+        idle: allTeams.filter(id => !busy.has(id)),
       };
     };
     let st = await status();
     if (!st) return log('Di tích 2: không lấy được thông tin');
-    log(`Di tích 2: lực chiến ${myFc}, đã đoạt ${st.rob}/${KF_ROB_MAX}, đội rảnh: ${st.idle.join(', ') || 'không có'}`);
+    log(`Di tích 2: lực chiến ${myFc}, đã đoạt ${st.rob}/${KF_ROB_MAX}, đội: ${allTeams.join(', ') || '?'}, đội rảnh: ${st.idle.join(', ') || 'không có'}`);
     if (!st.idle.length) return log('Di tích 2: không có đội rảnh');
 
     // Quét 10 tầng.
@@ -2133,6 +2141,46 @@
     log('== Xong tất cả ==');
   }
 
+  // Tỉ thí tông môn (exeGldWrUi): đánh GW_FREE lượt miễn phí vào 1 vùng đất. 18125 trạng thái (challenge_times
+  // = số lượt đã đánh), 18126 các vùng (city_occupy), 18127 {city_id} bảng xếp hạng vùng (my_rank > 0 = đã đánh ở
+  // vùng này), 18133 {city_id} khiêu chiến (đội hình type 22 đã lưu) -> trận 14002, trả {code 1, damage}.
+  // Chọn vùng đã đánh trước (có my_rank), chưa có thì vùng đầu tiên. Ngoài đợt mở thì bỏ qua.
+  const GW_FREE = 5;
+  async function guildWar() {
+    const st = await evReq(18125, {});
+    if (!st) return log('Tỉ thí tông môn: không lấy được thông tin');
+    // Mở theo đợt (vài ngày 1 lần): đang mở thì challenge_etime = giờ đóng đợt này, challenge_stime = giờ mở đợt
+    // sau (> etime); chưa mở thì stime = giờ mở sắp tới (< etime).
+    const now = NetMgr.gInst().getTime();
+    const fmt = t => new Date(t * 1000).toLocaleString('vi-VN');
+    if (!(st.challenge_etime > now) || (st.challenge_stime < st.challenge_etime && now < st.challenge_stime)) {
+      return log(`Tỉ thí tông môn: chưa mở, đợt sau ${fmt(st.challenge_stime)}`);
+    }
+    if (st.challenge_times >= GW_FREE) return log(`Tỉ thí tông môn: đã đánh ${st.challenge_times}/${GW_FREE} lượt`);
+    const cities = (((await evReq(18126, {})) || {}).city_occupy || []).map(c => c.city_id).sort((a, b) => a - b);
+    if (!cities.length) return log('Tỉ thí tông môn: không có vùng đất nào');
+    let city = null;
+    for (const id of cities) {
+      const r = await evReq(18127, { city_id: id });
+      if (r && r.my_rank > 0) { city = id; log(`Tỉ thí tông môn: vùng ${id} đã đánh trước, hạng ${r.my_rank}`); break; }
+      await sleep(200);
+    }
+    if (city == null) { city = cities[0]; log(`Tỉ thí tông môn: chưa đánh vùng nào, chọn vùng ${city}`); }
+    let times = st.challenge_times || 0;
+    while (times < GW_FREE && !stopFlag) {
+      await waitNotFighting();
+      const fight = waitRecv(14002, 10000);
+      const r = await evReq(18133, { city_id: city }, 10000);
+      if (!r || r.code != 1) return log(`Tỉ thí tông môn: lượt ${times + 1} lỗi ${errText(r)}`);
+      await fight;
+      await sleep(1000);
+      await waitNotFighting();
+      const s = await evReq(18125, {});
+      times = s ? s.challenge_times : times + 1;
+      log(`Tỉ thí tông môn: lượt ${times}/${GW_FREE} vùng ${city} - sát thương ${longVal(r.damage)}`);
+    }
+  }
+
   // Event "Làm tất cả": chạy lần lượt mọi sự kiện; sự kiện chưa mở tự báo và bỏ qua, lỗi một sự kiện không dừng cả lượt.
   async function runAllEvents() {
     const events = [
@@ -2146,6 +2194,7 @@
       ['Dục Ấn Thiên Chiếu / Đế Hồn Anh Phách', ducAn],
       ['Vòng quay may mắn', luckyWheel],
       ['Cứu Uyển Nhi', uyenNhi],
+      ['Tỉ thí tông môn', guildWar],
     ];
     stopFlag = false;
     for (const [name, fn] of events) {
@@ -3413,6 +3462,10 @@
     uyenNhi: action(() => {
       stopFlag = false;
       return uyenNhi();
+    }),
+    guildWar: action(() => {
+      stopFlag = false;
+      return guildWar();
     }),
     luckyWheel: action(() => {
       stopFlag = false;
