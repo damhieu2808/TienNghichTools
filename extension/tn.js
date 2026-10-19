@@ -2123,6 +2123,7 @@
       ['Di tích', ruinsAll],
       ['Cực Âm Địa', extremeYin],
       ['Núi cấm', forbiddenMountain],
+      ['Treo Thưởng', travel],
     ];
     stopFlag = false;
     for (const [name, fn] of steps) {
@@ -3325,7 +3326,6 @@
       ['Đấu Tiên Đài', arena],
       ['Thủ Vệ Tứ Phái', endlessTrial],
       ['Bí Cảnh', guildDungeon],
-      ['Treo Thưởng', travel],
       ['PB Ngày', dailyDungeon],
       ['Thông Thiên Tháp', tower],
       ['Tháp phái', campTowers],
