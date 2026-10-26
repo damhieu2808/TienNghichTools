@@ -69,19 +69,12 @@ poll();
 
 // Gọi window.TN[name](...args) trong frame có game.
 async function callTN(name, args = []) {
-  await applyLicense(); // xét lại hạn theo giờ server mỗi lần bấm
-  if (lic.error) return setStatus(lic.error, 'err');
   setStatus('Đang chạy...', 'run');
   out.value = '';
   holdUntil = 0;
   try {
     const tabId = await getTabId();
     await ensureTN(tabId);
-    // Báo hạn key cho tn.js để job định kỳ (chạy trong game, không qua popup) tự tắt khi hết hạn.
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true }, world: 'MAIN', args: [lic.exp || 0],
-      func: exp => { if (window.TN && window.TN.setLicenseExp) window.TN.setLicenseExp(exp); },
-    });
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       world: 'MAIN',
@@ -114,47 +107,16 @@ async function callTN(name, args = []) {
 }
 
 // Chế độ Prod/Dev: Dev hiện thêm khung ghi log + chạy code; nhớ lựa chọn trong localStorage của extension.
-// Key user chỉ được Prod.
 function setMode(mode) {
-  if (lic && lic.role === 'user') mode = 'prod';
   document.body.classList.remove('mode-prod', 'mode-dev');
   document.body.classList.add(`mode-${mode}`);
   document.querySelector(`input[name=mode][value=${mode}]`).checked = true;
   try { localStorage.setItem('mode', mode); } catch {}
 }
 
-// ---- Key (license.js, admin.js) ----
-let lic = null; // {role, exp, label} hoặc {error}
-const fmtTime = ms => new Date(ms).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' });
-// Giờ server game của tab đang mở (ms), không có game thì null. Server trả giây.
-async function serverTime() {
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: await getTabId(), allFrames: true },
-      world: 'MAIN',
-      func: () => { try { return typeof NetMgr !== 'undefined' ? NetMgr.gInst().getTime() : null; } catch { return null; } },
-    });
-    const t = (results.find(r => r.result) || {}).result;
-    return t ? (t < 1e12 ? t * 1000 : t) : null;
-  } catch {
-    return null;
-  }
-}
-async function applyLicense() {
-  const key = store.get(LIC_STORE);
-  lic = await verifyKey(key, await trustedNow(await serverTime()));
-  const ok = !lic.error;
-  document.body.classList.toggle('locked', !ok);
-  document.body.classList.toggle('role-user', ok && lic.role === 'user');
-  document.getElementById('lockMsg').textContent = !ok && key ? lic.error : '';
-  document.getElementById('licInfo').textContent = !ok ? ''
-    : lic.role === 'admin' ? 'admin'
-    : `HSD ${lic.exp ? fmtTime(lic.exp) : 'vĩnh viễn'}`;
-  let saved = 'prod';
-  try { saved = localStorage.getItem('mode') || 'prod'; } catch {}
-  setMode(saved);
-}
-applyLicense();
+let saved = 'prod';
+try { saved = localStorage.getItem('mode') || 'prod'; } catch {}
+setMode(saved);
 document.querySelectorAll('input[name=mode]').forEach(r => (r.onchange = () => setMode(r.value)));
 
 const bind = (id, fn) => (document.getElementById(id).onclick = fn);
@@ -232,32 +194,4 @@ bind('btnRun', () => callTN('runCode', [document.getElementById('code').value]))
 bind('btnCopy', async () => {
   await navigator.clipboard.writeText(out.value);
   setStatus('Đã copy', 'ok');
-});
-
-// Nhập key / quản lý key (Dev, chỉ admin).
-bind('btnUnlock', async () => {
-  store.set(LIC_STORE, document.getElementById('lockKey').value.trim());
-  await applyLicense();
-});
-const licOut = document.getElementById('licOut');
-const licMsg = text => (document.getElementById('licMsg').textContent = text);
-bind('btnLicGen', async () => {
-  licMsg('');
-  try {
-    const days = Math.max(0, Number(document.getElementById('licDays').value) || 0);
-    // Hạn tính từ giờ server game (nếu đang mở game) để khớp với giờ máy người dùng sẽ xét.
-    const { key, exp } = await makeKey(days, await trustedNow(await serverTime()));
-    licOut.value = key;
-    licMsg(`Key hết hạn ${exp ? fmtTime(exp) : 'vĩnh viễn'}`);
-  } catch (e) {
-    licMsg(String((e && e.message) || e));
-  }
-});
-bind('btnLicCopy', async () => {
-  await navigator.clipboard.writeText(licOut.value);
-  licMsg('Đã copy');
-});
-bind('btnLicLogout', async () => {
-  store.set(LIC_STORE, null);
-  await applyLicense();
 });

@@ -275,91 +275,16 @@
       #out {
         height: 200px;
       }
-
-      /* Key: chưa kích hoạt thì chỉ hiện ô nhập key; key user ẩn nút chuyển Dev. */
-      #lockCard,
-      body.locked > :not(header):not(#lockCard) {
-        display: none;
-      }
-      body.locked #lockCard {
-        display: block;
-      }
-      body.locked .mode,
-      body.role-user .mode {
-        display: none;
-      }
-      #licInfo {
-        font-size: 11px;
-        color: var(--muted);
-        margin-left: auto;
-        margin-right: 8px;
-      }
-      .lic input,
-      .lic select,
-      #lockKey {
-        width: 100%;
-        padding: 6px;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        background: var(--btn);
-        color: var(--text);
-        font: inherit;
-      }
-      .lic .row + .row,
-      .lic textarea {
-        margin-top: 6px;
-      }
-      .lic .row input[type="number"] {
-        width: 70px;
-        flex-shrink: 0;
-      }
-      .lic textarea {
-        height: 40px;
-        font-size: 16px;
-        letter-spacing: 0.1em;
-      }
-      #lockMsg,
-      #licMsg {
-        font-size: 12px;
-        color: var(--danger);
-        min-height: 16px;
-        margin-top: 4px;
-      }
     </style>
   </head>
   <body class="mode-prod">
     <header>
       <h1>TN Tool</h1>
-      <span id="licInfo"></span>
       <div class="mode">
         <label><input type="radio" name="mode" value="prod" />Prod</label>
         <label><input type="radio" name="mode" value="dev" />Dev</label>
       </div>
     </header>
-
-    <section id="lockCard" class="card">
-      <h2>Nhập key để dùng tool</h2>
-      <input id="lockKey" placeholder="Dán key vào đây" />
-      <div class="row" style="margin-top: 6px">
-        <button id="btnUnlock" class="primary">Kích hoạt</button>
-      </div>
-      <div id="lockMsg"></div>
-    </section>
-
-    <details class="card dev lic">
-      <summary><h2>Quản lý key</h2></summary>
-      <div class="row">
-        <input id="licDays" type="number" value="3" min="0" title="0 = vĩnh viễn" />
-        <span style="color: var(--muted)">ngày (0 = vĩnh viễn)</span>
-        <button id="btnLicGen" class="primary">Tạo key</button>
-      </div>
-      <textarea id="licOut" readonly placeholder="Key tạo ra sẽ hiện ở đây"></textarea>
-      <div class="row">
-        <button id="btnLicCopy">Copy key</button>
-        <button id="btnLicLogout">Thoát admin</button>
-      </div>
-      <div id="licMsg"></div>
-    </details>
 
     <details class="card dev">
       <summary><h2>Thêm tính năng mới</h2></summary>
@@ -541,8 +466,6 @@
       <div id="jobLine"></div>
       <textarea id="out" readonly placeholder="Kết quả hiện ở đây"></textarea>
     </section>
-    <script src="admin.js"></script>
-    <script src="license.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>
